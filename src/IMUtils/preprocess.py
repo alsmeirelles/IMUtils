@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 
 import cv2
-import argparse
 
 def image_resize(image, width=None, height=None, inter=cv2.INTER_AREA):
     """
@@ -43,7 +42,20 @@ def image_resize(image, width=None, height=None, inter=cv2.INTER_AREA):
     # return the resized image
     return resized
 
+def image_rotate(im, vert=False, horiz=False):
+    """
+    Rotate image 90 degrees, depending on its shape. If the longest dim is width, make height the longest
+    and vice-versa
+    @param im: Pillow Image, NDARRAY or string path
+    @param vert: Boolean, make vertical.
+    @param horiz: Boolean, make horizontal
+    @return: same as im, rotated image
+    """
+    pass
+
 if __name__ == "__main__":
+
+    import argparse
 
     # Parse input parameters
     arg_groups = []

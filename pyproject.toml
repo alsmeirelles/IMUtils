@@ -1,14 +1,25 @@
+[tool.poetry]
+name = "IMUtils"
+version = "0.0.1"
+readme = "README.md"
+packages = [{include = "IMUtils", from = "src"}]
+authors = ["André L.S. Meirelles <alsmeirelles@gmail.com>"]
+description = "A Helper to deal with images and training data"
+
+[tool.poetry.dependencies]
+python = "^3.9.0"
+
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+#[build-system]
+#requires = ["hatchling"]
+#build-backend = "hatchling.build"
 
 [project]
 name = "IMUtils"
 version = "0.0.1"
-authors = [
-  { name="André L.S. Meirelles", email="alsmeirelles@gmail.com" },
-]
-description = "A Helper to deal with images and training data"
 readme = "README.MD"
 requires-python = ">=3.9"
 classifiers = [

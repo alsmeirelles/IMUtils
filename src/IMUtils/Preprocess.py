@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
 
 import cv2
+import numpy as np
+from PIL import Image
 
-def image_resize(image, width=None, height=None, inter=cv2.INTER_AREA):
+def image_resize(image, width=None, height=None, rotate=False, inter=cv2.INTER_AREA):
     """
     Resize keeping aspect ratio
     @param image: Image as NDARRAY
     @param width: Resize to this width, adjust height accordingly
     @param height: Resize to the height, adjust width accordingly
+    @param rotate: Rotates before resizing to match to the defined axis (horizontal or vertical)
     @param inter: Interpolation mode, given by OpenCV
     @return: Resized image as NDARRAY
     """
@@ -21,6 +24,9 @@ def image_resize(image, width=None, height=None, inter=cv2.INTER_AREA):
     # original image
     if width is None and height is None:
         return image
+
+    if rotate and h != w:
+        image = image_rotate(image, vert=True) if w > h else image_rotate(image, horiz=True)
 
     # check to see if the width is None
     if width is None:
@@ -42,16 +48,29 @@ def image_resize(image, width=None, height=None, inter=cv2.INTER_AREA):
     # return the resized image
     return resized
 
-def image_rotate(im, vert=False, horiz=False):
+def image_rotate(im, vert=False, horiz=False, rnumpy = True):
     """
     Rotate image 90 degrees, depending on its shape. If the longest dim is width, make height the longest
     and vice-versa
     @param im: Pillow Image, NDARRAY or string path
     @param vert: Boolean, make vertical.
     @param horiz: Boolean, make horizontal
+    @param rnumpy: Boolean, return NDARRAY
     @return: same as im, rotated image
     """
-    pass
+
+    if not isinstance(im, Image.Image):
+        im = Image.fromarray(im)
+
+    if vert:
+        im = im.rotate(90, expand=True)
+    elif horiz:
+        im = im.rotate(-90, expand=True)
+
+    if rnumpy:
+        return np.array(im)
+    else:
+        return im
 
 if __name__ == "__main__":
 

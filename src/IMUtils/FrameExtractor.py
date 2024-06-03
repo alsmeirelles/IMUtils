@@ -172,6 +172,9 @@ if __name__ == "__main__":
         print('You should define a path to a dir (vdata) or file (fdata)')
         sys.exit(1)
 
+    if not os.path.isdir(config.out):
+        os.mkdir(config.out)
+
     if config.frames:
         run_annotated_frame_extraction(config)
     else:

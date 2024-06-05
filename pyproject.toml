@@ -7,7 +7,9 @@ authors = ["André L.S. Meirelles <alsmeirelles@gmail.com>"]
 description = "A Helper to deal with images and training data"
 
 [tool.poetry.dependencies]
-python = "^3.9.0"
+python = "^3.9"
+opencv-python = "^4.5.3.56"
+numpy = "^1.26"
 
 [build-system]
 requires = ["poetry-core"]

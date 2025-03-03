@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "IMUtils"
-version = "0.0.1"
+version = "1.0.0"
 readme = "README.md"
 packages = [{include = "IMUtils", from = "src"}]
 authors = ["André L.S. Meirelles <alsmeirelles@gmail.com>"]
@@ -21,7 +21,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "IMUtils"
-version = "0.0.1"
+version = "1.0.0"
 readme = "README.MD"
 requires-python = ">=3.9"
 classifiers = [

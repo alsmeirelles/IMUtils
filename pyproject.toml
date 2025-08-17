@@ -21,8 +21,14 @@ python = ">=3.9,<4.0"
 opencv-python = ">=4.5.3,<5.0.0"
 numpy = ">1.26.3,<3.0.0"
 
+
+# Optional deps (note: put versions/markers here, and mark optional=true)
+matplotlib = { version = ">=3.7", optional = true }
+PyGObject = { version = "*", optional = true, markers = "platform_system != 'Windows'" }
+
 [tool.poetry.extras]
-vis = ["matplotlib>=3.7", "PyGObject; platform_system != 'Windows'"]
+# Extras must reference the *names* defined above, without versions/markers
+vis = ["matplotlib", "PyGObject"]
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

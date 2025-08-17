@@ -2,10 +2,8 @@
 #-*- coding: utf-8
 
 import sys
-import os
 import numpy as np
 import multiprocessing
-import concurrent.futures
 
 from tqdm import tqdm
 

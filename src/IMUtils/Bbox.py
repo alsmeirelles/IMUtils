@@ -52,7 +52,7 @@ def adjust_box_90degree(orientation: str, original_bbox: list | tuple):
     return class_idx, new_x_center, new_y_center, new_width, new_height
 
 
-def adjust_bounding_box_to_crop(original_bbox, original_size, crop_bbox):
+def adjust_bounding_box_to_crop(original_bbox, original_size, crop_bbox, min_area=25):
     """
     Adjust a normalized bounding box to fit a cropped image.
 
@@ -60,7 +60,7 @@ def adjust_bounding_box_to_crop(original_bbox, original_size, crop_bbox):
     - original_bbox: Tuple of (class_id, x_center, y_center, width, height) normalized [0, 1]
     - original_size: Tuple of (original_height, original_width) in pixels
     - crop_bbox: Tuple of (x, y, w, h) in pixels for the crop region in the original image
-
+    - min_area: Minimum area of bounding box to fit in the cropped image
     Returns:
     - new_bbox: Tuple of (class_id, x_center, y_center, width, height) normalized [0, 1] for the cropped image
     """
@@ -100,6 +100,15 @@ def adjust_bounding_box_to_crop(original_bbox, original_size, crop_bbox):
     adjusted_y_min = max(0, min(adjusted_y_min, crop_h))
     adjusted_x_max = max(0, min(adjusted_x_max, crop_w))
     adjusted_y_max = max(0, min(adjusted_y_max, crop_h))
+
+    # Calculate the width and height in pixels
+    new_width = adjusted_x_max - adjusted_x_min
+    new_height = adjusted_y_max - adjusted_y_min
+
+    # Check if the area is smaller than the minimum area
+    area = new_width * new_height
+    if area < min_area:
+        return class_id, 0, 0, 0, 0  # Return zeroed coordinates for discarded boxes
 
     # Calculate the new center and size in pixel coordinates for the cropped image
     new_x_center = (adjusted_x_min + adjusted_x_max) / 2

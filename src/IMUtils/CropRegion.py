@@ -1,9 +1,7 @@
 import cv2
 import numpy as np
-import sys
-import os
 
-def crop_white_board(image:np.ndarray|str, output_path=None, display_result=False):
+def crop_white_board(image:np.ndarray | str, output_path=None, display_result=False):
     # Read the image
     if isinstance(image, str):
         image = cv2.imread(image)
@@ -186,14 +184,17 @@ def process_board(image_path):
 
 # Example usage with command-line argument or user input
 if __name__ == "__main__":
-    try:
-        # Check if filename is provided as a command-line argument
-        if len(sys.argv) > 1:
-            image_path = sys.argv[1]
-        else:
-            # If no argument, prompt user for input
-            image_path = input("Please enter the path to your image file: ")
+    import argparse
 
-        process_board(image_path)
-    except Exception as e:
-        print(f"Error: {e}")
+    # Parse input parameters
+    arg_groups = []
+    parser = argparse.ArgumentParser(description='This is a white board processor. Can create crops and skew corrections.')
+    parser.add_argument('-img', dest='img', type=str, default='.',
+                        help='Path to image to process.', required=True)
+    parser.add_argument('-vi', action='store_true', default=False, dest='visualize',
+                        help='Visualize results.')
+    parser.add_argument('-v', action='count', default=0, dest='verbose',
+                        help='Amount of verbosity (more \'v\'s means more verbose).')
+    config, unparsed = parser.parse_known_args()
+
+    process_board(config.img)

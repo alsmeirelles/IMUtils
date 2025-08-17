@@ -1,28 +1,13 @@
 # -*- coding: utf-8 -*-
 import os.path
 import numpy as np
-import matplotlib
-matplotlib.use("GTK3Agg")  # Set GTK as the backend
-import matplotlib.pyplot as plt
+import cv2
 from PIL import Image
+from typing import Tuple
 
 # Local imports
 from .Bbox import bbox_convert, draw_bbox
 
-
-def get_color_from_matplotlib(index:int, total_colors=10, colormap="tab10"):
-    """
-    Generates an RGB color from a Matplotlib colormap.
-
-    :param index: Integer index.
-    :param total_colors: Total expected unique colors.
-    :param colormap: Matplotlib colormap.
-    :return: Tuple (R, G, B) with values in range (0-255).
-    """
-    cmap = plt.get_cmap(colormap)  # Load specified colormap
-    normalized_index = index / max(1, total_colors - 1)  # Normalize index within colormap range
-    color = cmap(normalized_index)  # Get RGBA color from colormap
-    return tuple(int(c * 255) for c in color[:3])  # Convert from (0-1) to (0-255)
 
 def image_resize(image, width=None, height=None, rotate=False, inter=Image.Resampling.BICUBIC):
     """
@@ -75,9 +60,9 @@ def image_resize(image, width=None, height=None, rotate=False, inter=Image.Resam
     # return the resized image
     return resized
 
-def resize_with_pad(image: np.array,
+def resize_with_pad(image: np.ndarray,
                     new_shape: Tuple[int, int],
-                    padding_color: Tuple[int] = (255, 255, 255)) -> np.array:
+                    padding_color: Tuple[int] = (255, 255, 255)) -> np.ndarray:
     """Maintains aspect ratio and resizes with padding.
     Params:
         image: Image to be resized.
@@ -147,6 +132,30 @@ def visualize(image, bboxes, category_ids=None, category_id_to_name:dict=None, d
     @param category_id_to_name: Dictionary, mapping from class ID to name
     @param draw_categories: Boolean, draw categories text along bboxes
     """
+    try:
+        import matplotlib
+        matplotlib.use("GTK3Agg")  # Set GTK as the backend only if needed
+        import matplotlib.pyplot as plt
+    except ImportError as e:
+        raise RuntimeError(
+            "Visualization requires matplotlib with GTK3 support. "
+            "Please install it with: pip install matplotlib[gtk3]"
+        ) from e
+
+    def get_color_from_matplotlib(index: int, total_colors=10, colormap="tab10"):
+        """
+        Generates an RGB color from a Matplotlib colormap.
+
+        :param index: Integer index.
+        :param total_colors: Total expected unique colors.
+        :param colormap: Matplotlib colormap.
+        :return: Tuple (R, G, B) with values in range (0-255).
+        """
+        cmap = plt.get_cmap(colormap)  # Load specified colormap
+        normalized_index = index / max(1, total_colors - 1)  # Normalize index within colormap range
+        color = cmap(normalized_index)  # Get RGBA color from colormap
+        return tuple(int(c * 255) for c in color[:3])  # Convert from (0-1) to (0-255)
+
     img = image.copy()
     for bbox, category_id in zip(bboxes, category_ids):
         class_name = category_id_to_name[category_id]
@@ -201,8 +210,6 @@ if __name__ == "__main__":
                         help='Rotate image to vertical orientation.')
     parser.add_argument('-cpu', dest='cpu', type=int, default=1,
                         help='Number of processes workers .')
-    parser.add_argument('-vis', action='store_true', default=False, dest='visualize',
-                        help='Rotate image to vertical orientation.')
     parser.add_argument('-v', action='count', default=0, dest='verbose',
                         help='Amount of verbosity (more \'v\'s means more verbose).')
     config, unparsed = parser.parse_known_args()

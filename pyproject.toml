@@ -1,35 +1,29 @@
 [tool.poetry]
 name = "IMUtils"
-version = "1.0.0"
-readme = "README.md"
-packages = [{include = "IMUtils", from = "src"}]
-authors = ["André L.S. Meirelles <alsmeirelles@gmail.com>"]
+version = "1.0.1"
 description = "A Helper to deal with images and training data"
-
-[tool.poetry.dependencies]
-python = "^3.9"
-opencv-python = "^4.5.3.56"
-numpy = "^1.26"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
-#[build-system]
-#requires = ["hatchling"]
-#build-backend = "hatchling.build"
-
-[project]
-name = "IMUtils"
-version = "1.0.0"
-readme = "README.MD"
-requires-python = ">=3.9"
+authors = ["André L.S. Meirelles <alsmeirelles@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/alsmeirelles/IMUtils"
+repository = "https://github.com/alsmeirelles/IMUtils"
+documentation = "https://github.com/alsmeirelles/IMUtils"
+keywords = ["image-processing", "machine-learning", "data-preparation"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+packages = [{include = "IMUtils", from = "src"}]
 
-[project.urls]
-Homepage = "https://github.com/alsmeirelles/IMUtils"
-Issues = "https://github.com/alsmeirelles/IMUtils/issues"
+[tool.poetry.dependencies]
+python = ">=3.9,<4.0"
+opencv-python = ">=4.5.3,<5.0.0"
+numpy = ">1.26.3,<3.0.0"
+
+[tool.poetry.extras]
+vis = ["matplotlib>=3.7", "PyGObject; platform_system != 'Windows'"]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

@@ -1,15 +1,35 @@
 import cv2
 import numpy as np
 
-from enum import Enum
+# Locals
+from .Types import BBoxYolo, Colors, LetterboxParams
 
 
-class Colors(Enum):
-    BOX_COLOR = (255, 0, 0)  # Red
-    TEXT_COLOR = (255, 255, 255)  # White
+def transform_labels_after_resize_with_pad(
+        labels: list[BBoxYolo],
+        H0: int, W0: int,
+        resize_params: LetterboxParams) -> list[BBoxYolo]:
 
+    out: list[BBoxYolo] = []
+    left, top, right, bottom = resize_params.pad
+    Wt, Ht = resize_params.new_size
+    for cls, cx, cy, w, h in labels:
+        cx_px = cx * W0 * resize_params.ratio + left
+        cy_px = cy * H0 * resize_params.ratio + top
+        w_px = w * W0 * resize_params.ratio
+        h_px = h * H0 * resize_params.ratio
 
-def adjust_box_90degree(orientation: str, original_bbox: list | tuple):
+        cx2 = cx_px / float(Wt)
+        cy2 = cy_px / float(Ht)
+        w2 = w_px / float(Wt)
+        h2 = h_px / float(Ht)
+
+        # Keep only valid, non-degenerate boxes
+        if w2 > 0.0 and h2 > 0.0:
+            out.append((cls, cx2, cy2, w2, h2))
+    return out
+
+def adjust_box_90degree(orientation: str, original_bbox: list | tuple) -> tuple[int, float, float, float, float]:
     """
     Adjust YOLO-format bounding box coordinates for a 90° rotation.
 

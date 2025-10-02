@@ -5,9 +5,23 @@ import cv2
 from PIL import Image
 from typing import Tuple
 
+
 # Local imports
 from .Bbox import bbox_convert, draw_bbox
+from .Types import LetterboxParams
 
+def compute_letterbox_params(orig_hw: tuple[int, int], target_wh: tuple[int, int]) -> LetterboxParams:
+    H0, W0 = orig_hw
+    Wt, Ht = target_wh
+    ratio = float(max(Wt, Ht)) / float(max(W0, H0))
+    new_w, new_h = int(W0 * ratio), int(H0 * ratio)
+    if new_w > Wt or new_h > Ht:
+        ratio = float(min(Wt, Ht)) / float(min(W0, H0))
+        new_w, new_h = int(W0 * ratio), int(H0 * ratio)
+    dw, dh = max(0, Wt - new_w), max(0, Ht - new_h)
+    left, right = dw // 2, dw - (dw // 2)
+    top, bottom = dh // 2, dh - (dh // 2)
+    return LetterboxParams(ratio, (new_w, new_h), (left, top, right, bottom))
 
 def image_resize(image, width=None, height=None, rotate=False, inter=Image.Resampling.BICUBIC):
     """
@@ -62,7 +76,8 @@ def image_resize(image, width=None, height=None, rotate=False, inter=Image.Resam
 
 def resize_with_pad(image: np.ndarray,
                     new_shape: Tuple[int, int],
-                    padding_color: Tuple[int] = (255, 255, 255)) -> np.ndarray:
+                    padding_color: Tuple[int, int, int] = (255, 255, 255),
+                    return_params:bool = False) -> np.ndarray | Tuple[np.ndarray, LetterboxParams]:
     """Maintains aspect ratio and resizes with padding.
     Params:
         image: Image to be resized.
@@ -70,21 +85,18 @@ def resize_with_pad(image: np.ndarray,
         padding_color: Tuple in BGR of padding color
     Returns:
         image: Resized image with padding
+        params: Resized parameters (optional)
     """
-    original_shape = (image.shape[1], image.shape[0])
-    ratio = float(max(new_shape)) / max(original_shape)
-    new_size = tuple([int(x * ratio) for x in original_shape])
 
-    if new_size[0] > new_shape[0] or new_size[1] > new_shape[1]:
-        ratio = float(min(new_shape)) / min(original_shape)
-        new_size = tuple([int(x * ratio) for x in original_shape])
+    params = compute_letterbox_params(image.shape[:2], new_shape)
 
-    image = cv2.resize(image, new_size)
-    delta_w = new_shape[0] - new_size[0] if new_shape[0] > new_size[0] else 0
-    delta_h = new_shape[1] - new_size[1] if new_shape[1] > new_size[1] else 0
-    top, bottom = delta_h // 2, delta_h - (delta_h // 2)
-    left, right = delta_w // 2, delta_w - (delta_w // 2)
+
+    image = cv2.resize(image, params.new_size)
+    left, top, right, bottom = params.pad
     image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=padding_color)
+
+    if return_params:
+        return image, params
     return image
 
 

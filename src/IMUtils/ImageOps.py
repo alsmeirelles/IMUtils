@@ -2,13 +2,13 @@
 import os.path
 import numpy as np
 import cv2
-from PIL import Image
+from PIL import Image, ImageOps
 from typing import Tuple
-
 
 # Local imports
 from .Bbox import bbox_convert, draw_bbox
 from .Types import LetterboxParams
+
 
 def compute_letterbox_params(orig_hw: tuple[int, int], target_wh: tuple[int, int]) -> LetterboxParams:
     H0, W0 = orig_hw
@@ -22,6 +22,7 @@ def compute_letterbox_params(orig_hw: tuple[int, int], target_wh: tuple[int, int
     left, right = dw // 2, dw - (dw // 2)
     top, bottom = dh // 2, dh - (dh // 2)
     return LetterboxParams(ratio, (new_w, new_h), (left, top, right, bottom))
+
 
 def image_resize(image, width=None, height=None, rotate=False, inter=Image.Resampling.BICUBIC):
     """
@@ -74,10 +75,11 @@ def image_resize(image, width=None, height=None, rotate=False, inter=Image.Resam
     # return the resized image
     return resized
 
+
 def resize_with_pad(image: np.ndarray,
                     new_shape: Tuple[int, int],
                     padding_color: Tuple[int, int, int] = (255, 255, 255),
-                    return_params:bool = False) -> np.ndarray | Tuple[np.ndarray, LetterboxParams]:
+                    return_params: bool = False) -> np.ndarray | Tuple[np.ndarray, LetterboxParams]:
     """Maintains aspect ratio and resizes with padding.
     Params:
         image: Image to be resized.
@@ -90,7 +92,6 @@ def resize_with_pad(image: np.ndarray,
 
     params = compute_letterbox_params(image.shape[:2], new_shape)
 
-
     image = cv2.resize(image, params.new_size)
     left, top, right, bottom = params.pad
     image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=padding_color)
@@ -100,7 +101,7 @@ def resize_with_pad(image: np.ndarray,
     return image
 
 
-def image_rotate(im, orientation = None, rnumpy = False, conditional = False):
+def image_rotate(im, orientation=None, rnumpy=False, conditional=False):
     """
     Rotate image 90 degrees, depending on its shape. If the longest dim is width, make height the longest
     and vice versa
@@ -118,23 +119,27 @@ def image_rotate(im, orientation = None, rnumpy = False, conditional = False):
     if isinstance(im, np.ndarray):
         im = Image.fromarray(im)
     elif isinstance(im, str):
-        im = Image.open(im)
+        im = read_image(im, False) # Image.open(im)
 
     apply_rotation = not conditional or ((orientation == "v" and im.width > im.height) or
                                          (orientation == "h" and im.height > im.width))
 
     if orientation == 'v' and apply_rotation:
         im = im.rotate(90, expand=True)
+        direction = 'ccw'
     elif orientation == 'h' and apply_rotation:
         im = im.rotate(-90, expand=True)
+        direction = 'cw'
+    else:
+        direction = None
 
     if rnumpy:
-        return np.array(im), apply_rotation
+        return np.array(im), apply_rotation, direction
     else:
-        return im, apply_rotation
+        return im, apply_rotation, direction
 
 
-def visualize(image, bboxes, category_ids=None, category_id_to_name:dict=None, draw_categories=False):
+def visualize(image, bboxes, category_ids=None, category_id_to_name: dict = None, draw_categories=False):
     """
     Visualize bounding boxes on the image.
 
@@ -182,13 +187,14 @@ def visualize(image, bboxes, category_ids=None, category_id_to_name:dict=None, d
     return img
 
 
-def write_image(img, path:str):
+def write_image(img, path: str):
     if isinstance(img, np.ndarray):
         Image.fromarray(img).save(path)
     elif isinstance(img, Image.Image):
         img.save(path)
 
-def read_image(path:str, rnumpy=False):
+
+def read_image(path: str, rnumpy=False):
     """
     Read an image from path
     @param path: Path to image
@@ -196,10 +202,12 @@ def read_image(path:str, rnumpy=False):
     """
 
     im = Image.open(path)
+    im = ImageOps.exif_transpose(im)
     if rnumpy:
         return np.array(im)
     else:
         return im
+
 
 if __name__ == "__main__":
 
@@ -228,7 +236,6 @@ if __name__ == "__main__":
 
     config.image_size = tuple(config.image_size)
 
-
     if not config.outroot:
         config.outroot = os.path.join(os.path.dirname(config.outroot), "resized")
 
@@ -237,8 +244,8 @@ if __name__ == "__main__":
 
     orientation = "h" if config.horizontal else "v" if config.vertical else ""
     rotate = True if (orientation == "h" or orientation == "v") else False
-    resized = image_resize(image=config.file,
-                 width=config.image_size[0],
-                 height=config.image_size[1],
-                 rotate=rotate)
+    r_img = image_resize(image=config.file,
+                         width=config.image_size[0],
+                         height=config.image_size[1],
+                         rotate=rotate)
     rotated = image_rotate(im=config.file, orientation=orientation)

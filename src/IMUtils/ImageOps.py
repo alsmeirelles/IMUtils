@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 from PIL import Image, ImageOps
 from typing import Tuple
+from pathlib import Path
 
 # Local imports
 from .Bbox import bbox_convert, draw_bbox
@@ -194,7 +195,7 @@ def write_image(img, path: str):
         img.save(path)
 
 
-def read_image(path: str, rnumpy=False):
+def read_image(path: str | Path, rnumpy=False):
     """
     Read an image from path
     @param path: Path to image

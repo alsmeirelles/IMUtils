@@ -106,7 +106,7 @@ def image_rotate(im, orientation=None, rnumpy=False, conditional=False):
     """
     Rotate image 90 degrees, depending on its shape. If the longest dim is width, make height the longest
     and vice versa
-    @param im: Pillow Image, NDARRAY or string path
+    @param im: Pillow Image, NDARRAY (BGR) or string path
     @param orientation | STR: h for horizontal or v for vertical
     @param rnumpy: Boolean, return NDARRAY
     @param conditional: Boolean, only rotate if orientation is different from current dimensions. IE: if width is the
@@ -118,7 +118,7 @@ def image_rotate(im, orientation=None, rnumpy=False, conditional=False):
         return im
 
     if isinstance(im, np.ndarray):
-        im = Image.fromarray(im)
+        im = Image.fromarray(im[:, :, ::-1]) # BGR -> RGB for PIL
     elif isinstance(im, str):
         im = read_image(im, False) # Image.open(im)
 
@@ -135,7 +135,7 @@ def image_rotate(im, orientation=None, rnumpy=False, conditional=False):
         direction = None
 
     if rnumpy:
-        return np.array(im), apply_rotation, direction
+        return np.array(im)[:, :, ::-1], apply_rotation, direction  # back to BGR
     else:
         return im, apply_rotation, direction
 
@@ -190,7 +190,7 @@ def visualize(image, bboxes, category_ids=None, category_id_to_name: dict = None
 
 def write_image(img, path: str):
     if isinstance(img, np.ndarray):
-        Image.fromarray(img).save(path)
+        Image.fromarray(img[:, :, ::-1]).save(path) # BGR -> RGB before saving PIL
     elif isinstance(img, Image.Image):
         img.save(path)
 
@@ -199,13 +199,13 @@ def read_image(path: str | Path, rnumpy=False):
     """
     Read an image from path
     @param path: Path to image
-    @param rnumpy: Boolean, return NDARRAY
+    @param rnumpy: Boolean, return NDARRAY (BGR)
     """
 
     im = Image.open(path)
     im = ImageOps.exif_transpose(im)
     if rnumpy:
-        return np.array(im)
+        return np.array(im)[:, :, ::-1] # BGR numpy array
     else:
         return im
 

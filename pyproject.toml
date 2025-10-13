@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "IMUtils"
-version = "1.0.1"
+version = "1.0.3"
 description = "A Helper to deal with images and training data"
 authors = ["André L.S. Meirelles <alsmeirelles@gmail.com>"]
 license = "MIT"
@@ -14,13 +14,14 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-packages = [{include = "IMUtils", from = "src"}]
+packages = [{ include = "IMUtils", from = "src" }]
 
 [tool.poetry.dependencies]
 python = ">=3.9,<4.0"
 opencv-python = ">=4.5.3,<5.0.0"
-numpy = ">1.26.3,<3.0.0"
-
+numpy = ">2.0.0,<3.0.0"
+tqdm = ">=4.64"
+decord = ">=0.6.0"
 
 # Optional deps (note: put versions/markers here, and mark optional=true)
 matplotlib = { version = ">=3.7", optional = true }
@@ -30,6 +31,10 @@ PyGObject = { version = "*", optional = true, markers = "platform_system != 'Win
 # Extras must reference the *names* defined above, without versions/markers
 vis = ["matplotlib", "PyGObject"]
 
+[tool.poetry.scripts]
+# Console entry point: `imutils-frames ...`
+imutils-frames = "IMUtils.cli.frame_extractor:main"
+
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core>=2.2.0"]
 build-backend = "poetry.core.masonry.api"

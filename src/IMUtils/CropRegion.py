@@ -1,6 +1,10 @@
 import cv2
+import os
 import numpy as np
 from math import degrees
+from typing import Tuple, Optional
+
+# ---------------------- Helper functions ----------------------------------------------------
 
 def _order_quad(pts: np.ndarray) -> np.ndarray:
     # robust TL,TR,BR,BL ordering
@@ -46,68 +50,118 @@ def _side_lengths(quad: np.ndarray):
     right = np.linalg.norm(br - tr)
     return top, bottom, left, right
 
-# Old implementations, to be removed
-def _crop_white_board(image:np.ndarray | str):
-    # Read the image
-    if isinstance(image, str):
-        image = cv2.imread(image)
+def _ensure_dir(p: Optional[str]) -> None:
+    if p:
+        os.makedirs(p, exist_ok=True)
 
-    if image is None:
-        raise ValueError("Could not load the image")
 
-    # Convert to grayscale for easier processing
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+def _longest_true_run(b: np.ndarray) -> tuple[int, int]:
+    best_len = best_start = cur_len = cur_start = 0
+    for i, v in enumerate(b):
+        if v:
+            if cur_len == 0:
+                cur_start = i
+            cur_len += 1
+            if cur_len > best_len:
+                best_len, best_start = cur_len, cur_start
+        else:
+            cur_len = 0
+    return best_len, best_start
 
-    # Apply Gaussian blur to reduce noise
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+def _estimate_region_hue_hsv(hsv: np.ndarray) -> Optional[int]:
+    """
+    Estimate dominant hue of the target region (e.g., belt, board) from the image.
+    Looks for moderately saturated, bright blue–cyan pixels, returns hue in [0..179].
+    """
+    H, S, V = cv2.split(hsv)
+    mask_sv = (S > 60) & (V > 60)
+    mask_blue = (H >= 70) & (H <= 120)
+    sel = mask_sv & mask_blue
+    if not np.any(sel):
+        return None
+    hvals = H[sel].astype(np.int16)
+    hist = np.bincount(hvals, minlength=180)
+    return int(np.argmax(hist))
 
-    # Use adaptive thresholding to segment the white board from the background
-    # Since the board is lighter, we invert the threshold
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 11, 2)
 
-    # Find contours of the white board
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+def _color_mask(
+    image_bgr: np.ndarray,
+    background_bgr: Optional[Tuple[int, int, int]],
+    tol_h: int,
+    tol_s: int,
+    tol_v: int) -> np.ndarray:
+    """
+    Robust color mask.
 
-    if not contours:
-        raise ValueError("No contours found in the image")
+    Strategy:
+      1) Use the provided color (or auto-estimate) **only** to center the HUE band.
+      2) Find pixels inside that hue band. From those pixels, compute adaptive lower
+         bounds for S and V using quantiles, but never lower than sv_floor.
+      3) Apply final S/V thresholds with wide upper caps.
 
-    # Find the largest contour (assuming the board is the largest light area)
-    largest_contour = max(contours, key=cv2.contourArea)
+    Args:
+        image_bgr: BGR frame.
+        background_bgr: (B,G,R) color hint for the region. None = auto hue estimate.
+        tol_h: Hue tolerance (±) in OpenCV hue space [0..179].
+        tol_s/tol_v: Kept for compatibility; we still cap S/V on the upper side.
 
-    # Get the bounding rectangle of the largest contour
-    x, y, w, h = cv2.boundingRect(largest_contour)
+    Returns:
+        uint8 mask {0,255}.
+    """
+    # Hardcoded robustness knobs (as requested)
+    SV_FLOOR_S = 35  # minimal S accepted under glare
+    SV_FLOOR_V = 35  # minimal V accepted in shadows
+    Q_S = 0.20  # adaptive floor from hue-selected pixels
+    Q_V = 0.20
 
-    # More robust correction: Check the edges of the bounding rectangle for the board
-    # Use the grayscale image to check pixel intensity near the edges
-    padding_factor = 0.05  # 5% of width/height as a dynamic padding
-    dynamic_padding_x = int(w * padding_factor)
-    dynamic_padding_y = int(h * padding_factor)
+    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    H = hsv[:, :, 0].astype(np.uint8)
+    S = hsv[:, :, 1].astype(np.uint8)
+    V = hsv[:, :, 2].astype(np.uint8)
 
-    # Ensure the dynamic padding doesn’t exceed image boundaries
-    x = max(0, x - dynamic_padding_x)
-    y = max(0, y - dynamic_padding_y)
-    w = min(image.shape[1] - x, w + 2 * dynamic_padding_x)
-    h = min(image.shape[0] - y, h + 2 * dynamic_padding_y)
+    # Center hue from BGR hint or auto-estimate
+    if background_bgr is not None:
+        target = np.uint8([[list(background_bgr)]])
+        th, ts, tv = cv2.cvtColor(target, cv2.COLOR_BGR2HSV)[0, 0]
+    else:
+        th_est = _estimate_region_hue_hsv(hsv)
+        if th_est is None:
+            th, ts, tv = 100, 120, 160  # generic cyan/blue
+        else:
+            th, ts, tv = th_est, 120, 160
 
-    # Additional check: Ensure we capture the full board by verifying edge intensity
-    # Check if the edges of the cropped region still contain light pixels (board)
-    cropped_gray = gray[y:y + h, x:x + w]
-    _, edge_thresh = cv2.threshold(cropped_gray, 200, 255, cv2.THRESH_BINARY)
-    edge_pixels = cv2.countNonZero(edge_thresh)
+    th = int(th);
+    tol_h = int(tol_h)
 
-    # If there are still light pixels near the edges, expand further (optional safeguard)
-    if edge_pixels > 0:
-        additional_padding = 10  # Add a small fixed padding if light pixels are detected
-        x = max(0, x - additional_padding)
-        y = max(0, y - additional_padding)
-        w = min(image.shape[1] - x, w + 2 * additional_padding)
-        h = min(image.shape[0] - y, h + 2 * additional_padding)
+    # Hue mask with wrap-around handling, using NumPy (not cv2.inRange)
+    lo = (th - tol_h) % 180
+    hi = (th + tol_h) % 180
+    if lo <= hi:
+        hue_mask = ((H >= lo) & (H <= hi))
+    else:
+        # wraps around 0
+        hue_mask = ((H >= 0) & (H <= hi)) | ((H >= lo) & (H <= 179))
 
-    # Crop the image with the adjusted bounding rectangle
-    cropped_image = image[y:y + h, x:x + w]
+    # Adaptive S/V lower bounds from pixels inside the hue band
+    sel = hue_mask
+    if sel.any():
+        s_min = max(SV_FLOOR_S, int(np.quantile(S[sel], Q_S)))
+        v_min = max(SV_FLOOR_V, int(np.quantile(V[sel], Q_V)))
+    else:
+        s_min, v_min = SV_FLOOR_S, SV_FLOOR_V
 
-    return cropped_image, (x, y, w, h)
+    # Upper caps based on provided tol around the hint center (cast to int first!)
+    s_max = min(255, int(ts) + int(tol_s))
+    v_max = min(255, int(tv) + int(tol_v))
+
+    # Final S/V masks via NumPy; convert to uint8 0/255 at the end
+    s_ok = (S.astype(np.int16) >= s_min) & (S.astype(np.int16) <= s_max)
+    v_ok = (V.astype(np.int16) >= v_min) & (V.astype(np.int16) <= v_max)
+
+    mask_bool = hue_mask & s_ok & v_ok
+    return mask_bool.astype(np.uint8) * 255
+
+# ---------------------- Public functions ----------------------------------------------------
 
 def crop_white_board(
     image: np.ndarray,
@@ -119,6 +173,15 @@ def crop_white_board(
     """
     Returns cropped image and crop rectangle (x,y,w,h).
     The expansion is clamped to min(H,W)*max_expand_frac.
+
+    Args:
+        image (np.ndarray): image to crop (BGR format)
+        expand_px (int, optional): expansion factor. Defaults to 20.
+        max_expand_frac (float, optional): maximum expansion factor. Defaults to 0.1.
+        min_area_frac (float, optional): minimum area fraction. Defaults to 0.1.
+
+    Returns:
+        np.ndarray: cropped image (BGR format)
     """
     H, W = image.shape[:2]
     max_expand_px = int(max(0, min(H, W) * max_expand_frac))
@@ -160,7 +223,7 @@ def crop_white_board(
 
 
 def correct_perspective(
-    image: np.ndarray,
+    image: np.ndarray,                          # BGR image
     *,
     target_aspect_ratio: float | None = None,   # e.g. 3.0/2.0 for a 3x2 grid
     ar_strength: float = 0.65,                  # 0..1, how strongly to pull toward target_ar
@@ -254,81 +317,129 @@ def correct_perspective(
 
     return warped, H, (out_w, out_h) if return_matrix else warped
 
-# Old implementation, to be removed
-def _correct_perspective(cropped_image: np.ndarray, return_matrix: bool = False):
-    gray = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(cv2.GaussianBlur(gray, (5,5), 0), 100, 200)
-    morph = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5,5), np.uint8))
-    contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        raise ValueError("No contours found in the cropped image")
-    largest = max(contours, key=cv2.contourArea)
-    eps = 0.03 * cv2.arcLength(largest, True)
-    approx = cv2.approxPolyDP(largest, eps, True)
-    if len(approx) < 4:
-        raise ValueError("Could not detect enough corners")
-    corners = approx[:4].reshape(-1, 2).astype(np.float32)
 
-    # Order corners TL, TR, BR, BL robustly
-    c = corners.mean(axis=0)
-    angles = np.arctan2(corners[:,1]-c[1], corners[:,0]-c[0])
-    ordered = corners[np.argsort(angles)]
-    top = ordered[ordered[:,1].argsort()[:2]]
-    bottom = ordered[ordered[:,1].argsort()[2:]]
-    tl = top[top[:,0].argmin()]; tr = top[top[:,0].argmax()]
-    bl = bottom[bottom[:,0].argmin()]; br = bottom[bottom[:,0].argmax()]
-    src = np.array([tl, tr, br, bl], dtype=np.float32)
+def crop_color_region(
+    image_bgr: np.ndarray,
+    *,
+    background_bgr: Optional[Tuple[int, int, int]] = None,
+    tol_h: int = 16,
+    tol_s: int = 80,
+    tol_v: int = 80,
+    min_area_frac: float = 0.05,
+    margin_px: int = 24,
+    morph_close_x_frac: float = 1 / 18,
+    morph_close_y_frac: float = 1 / 120,
+    row_ratio_thresh: Optional[float] = None,
+    row_min_run_frac: float = 0.35,
+    min_crop_h_frac: float = 0.22,
+    win_h_fracs: Tuple[float, float, float] = (0.22, 0.38, 0.06),
+    debug_dir: Optional[str] = None,
+    debug_prefix: str = "frame",
+) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """
+    Crop the main color region (e.g., conveyor belt, board) while keeping aspect.
 
-    h, w = cropped_image.shape[:2]
-    pad = 10
-    dst = np.array([[0,0],
-                    [w+2*pad-1, 0],
-                    [w+2*pad-1, h+2*pad-1],
-                    [0, h+2*pad-1]], dtype=np.float32)
+    Steps:
+      1) HSV color mask (provided or auto hue estimation).
+      2) Morphological closing to fill gaps.
+      3) Try largest contour; fallback to adaptive row-projection.
 
-    H = cv2.getPerspectiveTransform(src, dst)
-    out_w, out_h = int(w + 2*pad), int(h + 2*pad)
-    corrected = cv2.warpPerspective(cropped_image, H, (out_w, out_h))
-    return (corrected, H, (out_w, out_h)) if return_matrix else corrected
+    Returns:
+        (crop_bgr, (x, y, w, h))
+    """
+    H, W = image_bgr.shape[:2]
+    _ensure_dir(debug_dir)
 
-def process_board(image_path):
-    # Step 1: Crop the white board region
-    cropped_image, bbox = crop_white_board(image_path, 'cropped_temp.jpg')
+    mask = _color_mask(image_bgr, background_bgr, tol_h, tol_s, tol_v)
 
-    # Step 2: Apply perspective correction to the cropped image
-    corrected_image = correct_perspective(cropped_image)
+    # horizontal closing to fill occlusions
+    kx = max(25, int(W * morph_close_x_frac)); kx += (kx + 1) % 2
+    ky = max(5, int(H * morph_close_y_frac)); ky += (ky + 1) % 2
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky))
+    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    # Optionally, display the original, cropped, and corrected images
-    original_image = cv2.imread(image_path)
-    cv2.imshow('Original Image', original_image)
-    cv2.imshow('Cropped White Board', cropped_image)
-    cv2.imshow('Corrected White Board', corrected_image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    if debug_dir:
+        cv2.imwrite(os.path.join(debug_dir, f"{debug_prefix}_mask.png"), mask)
+        cv2.imwrite(os.path.join(debug_dir, f"{debug_prefix}_closed.png"), closed)
 
-    # Save the corrected image
-    cv2.imwrite('corrected_board.jpg', corrected_image)
+    # try contour first
+    cnts, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    use_contour = False
+    if cnts:
+        c = max(cnts, key=cv2.contourArea)
+        if cv2.contourArea(c) >= (min_area_frac * W * H):
+            x, y, w, h = cv2.boundingRect(c)
+            use_contour = True
 
-    # Clean up temporary file
-    # if os.path.exists('cropped_temp.jpg'):
-    #    os.remove('cropped_temp.jpg')
+    # 3b) fallback: row projection (adaptive + sliding-window)
+    if not use_contour:
+        row_counts = (closed > 0).sum(axis=1).astype(np.float32)  # [H]
+        row_ratio = row_counts / float(W)
 
-    return corrected_image
+        if debug_dir:
+            np.savetxt(os.path.join(debug_dir, f"{debug_prefix}_row_ratio.csv"),
+                       row_ratio, delimiter=",", fmt="%.6f")
 
+        Hf = float(H)
+        # (A) First try the old adaptive-threshold run (quick win on easy frames)
+        if row_ratio_thresh is None:
+            m, s = float(row_ratio.mean()), float(row_ratio.std())
+            thr = max(0.15, min(0.60, m + 0.50 * s))
+        else:
+            thr = float(row_ratio_thresh)
 
-# Example usage with command-line argument or user input
-if __name__ == "__main__":
-    import argparse
+        inside = (row_ratio >= thr)
+        best_len, best_start = _longest_true_run(inside)
+        have_reasonable_run = (best_len >= int(row_min_run_frac * H))
 
-    # Parse input parameters
-    arg_groups = []
-    parser = argparse.ArgumentParser(description='This is a white board processor. Can create crops and skew corrections.')
-    parser.add_argument('-img', dest='img', type=str, default='.',
-                        help='Path to image to process.', required=True)
-    parser.add_argument('-vi', action='store_true', default=False, dest='visualize',
-                        help='Visualize results.')
-    parser.add_argument('-v', action='count', default=0, dest='verbose',
-                        help='Amount of verbosity (more \'v\'s means more verbose).')
-    config, unparsed = parser.parse_known_args()
+        if have_reasonable_run:
+            y0 = best_start
+            y1 = best_start + best_len
+        else:
+            # (B) Sliding-window search: maximize total "blue fraction" over a band height
+            #    Search window heights in [win_min..win_max] * H with step
+            win_min, win_max, win_step = win_h_fracs
+            Ls = [int(Hf * f) for f in np.arange(win_min, win_max + 1e-9, win_step)]
+            Ls = [L for L in Ls if L >= max(8, int(Hf * min_crop_h_frac)) and L <= H] or [int(Hf * min_crop_h_frac)]
 
-    process_board(config.img)
+            # prefix sum for O(1) window score
+            prefix = np.concatenate([[0.0], np.cumsum(row_ratio, dtype=np.float64)])
+            best_score, y0, y1 = -1.0, 0, H
+            for L in Ls:
+                # slide window of height L
+                max_start = H - L
+                if max_start < 0:
+                    continue
+                # coarse stride for speed, then refine around best
+                stride = max(1, L // 8)
+                for s0 in range(0, max_start + 1, stride):
+                    s1 = s0 + L
+                    score = prefix[s1] - prefix[s0]
+                    if score > best_score:
+                        best_score, y0, y1 = score, s0, s1
+
+                # local refine around the current best
+                s0r = max(0, y0 - stride)
+                s1r = min(H - L, y0 + stride)
+                for s0 in range(s0r, s1r + 1):
+                    s1 = s0 + L
+                    score = prefix[s1] - prefix[s0]
+                    if score > best_score:
+                        best_score, y0, y1 = score, s0, s1
+
+        # (C) Enforce a minimum crop height (avoid thin strips)
+        min_h = max(int(Hf * min_crop_h_frac), 8)
+        cur_h = y1 - y0
+        if cur_h < min_h:
+            extra = (min_h - cur_h) // 2 + 1
+            y0 = max(0, y0 - extra)
+            y1 = min(H, y1 + extra)
+
+        # (D) Apply margin and full-width crop
+        x, y, w, h = 0, max(0, y0), W, max(1, y1 - y0)
+
+    x0 = max(0, x - margin_px); y0 = max(0, y - margin_px)
+    x1 = min(W, x + w + margin_px); y1 = min(H, y + h + margin_px)
+    crop = image_bgr[y0:y1, x0:x1].copy()
+
+    return crop, (x0, y0, x1 - x0, y1 - y0)

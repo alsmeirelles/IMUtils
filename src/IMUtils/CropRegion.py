@@ -166,57 +166,94 @@ def _color_mask(
 def crop_white_board(
     image: np.ndarray,
     *,
-    expand_px: int = 20,                 # desired uniform padding in pixels
-    max_expand_frac: float = 0.12,       # cap expansion to ≤ 12% of min(H,W)
-    min_area_frac: float = 0.10          # ignore tiny blobs
+    expand_px: int = 20,             # desired padding
+    max_expand_frac: float = 0.12,   # cap each side's expansion
+    min_area_frac: float = 0.10,     # board must cover ≥10% of frame
+    robustness: int = 2              # how many times to relax thresholds if area too small
 ):
     """
-    Returns cropped image and crop rectangle (x,y,w,h).
-    The expansion is clamped to min(H,W)*max_expand_frac.
-
-    Args:
-        image (np.ndarray): image to crop (BGR format)
-        expand_px (int, optional): expansion factor. Defaults to 20.
-        max_expand_frac (float, optional): maximum expansion factor. Defaults to 0.1.
-        min_area_frac (float, optional): minimum area fraction. Defaults to 0.1.
-
-    Returns:
-        np.ndarray: cropped image (BGR format)
+    Adaptive white-board crop that is robust to darker shots.
+    Returns (crop, (x,y,w,h)).
     """
     H, W = image.shape[:2]
-    max_expand_px = int(max(0, min(H, W) * max_expand_frac))
+    max_expand_px = int(min(H, W) * max_expand_frac)
     expand_px = int(np.clip(expand_px, 0, max_expand_px))
 
-    # 1) estimate board mask (bright + smooth)
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    # white-ish with tolerance (tune if lighting changes)
-    lower = np.array([0, 0, 150], dtype=np.uint8)
-    upper = np.array([180, 60, 255], dtype=np.uint8)
-    mask = cv2.inRange(hsv, lower, upper)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7,7), np.uint8), iterations=2)
+    # --- 1) Local contrast normalization (helps low light / vignetting)
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    Lc = clahe.apply(L)
+    img_eq = cv2.cvtColor(cv2.merge([Lc, A, B]), cv2.COLOR_LAB2BGR)
 
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        # fallback: return original (no risky crop)
+    # Precompute channels we’ll use repeatedly
+    hsv = cv2.cvtColor(img_eq, cv2.COLOR_BGR2HSV)
+    Hh, Ss, Vv = cv2.split(hsv)
+    lab2 = cv2.cvtColor(img_eq, cv2.COLOR_BGR2LAB)
+    L2, A2, B2 = cv2.split(lab2)
+
+    # Structuring elements
+    k7 = np.ones((7, 7), np.uint8)
+    k11 = np.ones((11, 11), np.uint8)
+
+    # --- 2) Try with progressively more permissive thresholds
+    best_rect = (0, 0, W, H)
+    best_area = 0
+
+    for relax in range(robustness + 1):
+        # HSV near-white (low S, high V) with ADAPTIVE cutoffs
+        s_max = 60 + 20 * relax                         # allow a little more saturation each step
+        v_base_pct = max(40, 75 - 10 * relax)           # percentile to define "bright"
+        v_lo = int(np.percentile(Vv, v_base_pct))       # adapt to brightness
+        v_lo = max(100 - 20 * relax, v_lo - 10)         # don't go too low; allow some relaxation
+
+        mask_hsv = (Ss < s_max) & (Vv > v_lo)
+
+        # LAB near-neutral (white/grey) + high L*
+        ab_tol = 12 + 6 * relax                         # widen neutrality band
+        l_pct = max(35, 60 - 10 * relax)                # percentile for L* threshold
+        l_lo = int(np.percentile(L2, l_pct))
+        l_lo = max(90 - 15 * relax, l_lo - 5)
+        mask_lab = (np.abs(A2.astype(np.int16) - 128) < ab_tol) & \
+                   (np.abs(B2.astype(np.int16) - 128) < ab_tol) & \
+                   (L2 > l_lo)
+
+        mask = (mask_hsv | mask_lab).astype(np.uint8) * 255
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k7, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k7, iterations=1)
+        mask = cv2.dilate(mask, k11, iterations=1)
+
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            continue
+
+        c = max(cnts, key=cv2.contourArea)
+        area = cv2.contourArea(c)
+        if area > best_area:
+            x, y, w, h = cv2.boundingRect(c)
+            best_rect = (x, y, w, h)
+            best_area = area
+
+        # Stop early if it looks like the board (enough area)
+        if area >= min_area_frac * (W * H):
+            break
+
+    # If nothing reasonable, fall back to full frame
+    x, y, w, h = best_rect
+    if best_area < min_area_frac * (W * H):
         return image, (0, 0, W, H)
 
-    c = max(cnts, key=cv2.contourArea)
-    if cv2.contourArea(c) < min_area_frac * (W * H):
-        return image, (0, 0, W, H)
-
-    x, y, w, h = cv2.boundingRect(c)
-
-    # 2) apply padding but **clamp by max_expand_px** and **image bounds**
+    # --- 3) Apply padding with max-expand clamp and image bounds
     x0 = max(0, x - expand_px)
     y0 = max(0, y - expand_px)
     x1 = min(W, x + w + expand_px)
     y1 = min(H, y + h + expand_px)
 
-    # ensure we really limited expansion
-    if x - x0 > max_expand_px: x0 = x - max_expand_px
-    if y - y0 > max_expand_px: y0 = y - max_expand_px
-    if x1 - (x + w) > max_expand_px: x1 = x + w + max_expand_px
-    if y1 - (y + h) > max_expand_px: y1 = y + h + max_expand_px
+    # enforce per-side cap
+    x0 = max(x - max_expand_px, x0)
+    y0 = max(y - max_expand_px, y0)
+    x1 = min(x + w + max_expand_px, x1)
+    y1 = min(y + h + max_expand_px, y1)
 
     crop = image[y0:y1, x0:x1].copy()
     return crop, (x0, y0, x1 - x0, y1 - y0)

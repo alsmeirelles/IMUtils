@@ -5,14 +5,14 @@ from typing import List, Tuple, Optional
 # Locals
 from .Types import BBoxYolo, Colors, LetterboxParams
 
-def _yolo_to_pixels(box: BBoxYolo, H: int, W: int) -> Tuple[int,int,int,int]:
+def yolo_to_pixels(box: BBoxYolo, H: int, W: int) -> Tuple[int,int,int,int]:
     cls, cx, cy, w, h = box
     px = cx * W; py = cy * H; pw = w * W; ph = h * H
     x0 = px - pw/2; y0 = py - ph/2
     x1 = px + pw/2; y1 = py + ph/2
     return int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1))
 
-def _pixels_to_yolo(cls: int, x0: float, y0: float, x1: float, y1: float, H: int, W: int) -> BBoxYolo:
+def pixels_to_yolo(cls: int, x0: float, y0: float, x1: float, y1: float, H: int, W: int) -> BBoxYolo:
     x0 = max(0, min(W-1, x0)); x1 = max(0, min(W-1, x1))
     y0 = max(0, min(H-1, y0)); y1 = max(0, min(H-1, y1))
     if x1 <= x0 or y1 <= y0:
@@ -21,7 +21,7 @@ def _pixels_to_yolo(cls: int, x0: float, y0: float, x1: float, y1: float, H: int
     cy = ((y0 + y1) / 2.0) / H
     w  = (x1 - x0) / W
     h  = (y1 - y0) / H
-    return (cls, float(cx), float(cy), float(w), float(h))
+    return cls, float(cx), float(cy), float(w), float(h)
 
 def transform_labels_after_perspective_warp(
     labels: List[BBoxYolo],
@@ -34,7 +34,7 @@ def transform_labels_after_perspective_warp(
     out: List[BBoxYolo] = []
     for box in labels:
         cls = box[0]
-        x0, y0, x1, y1 = _yolo_to_pixels(box, Hi, Wi)
+        x0, y0, x1, y1 = yolo_to_pixels(box, Hi, Wi)
         # 4 corners
         pts = np.array([[x0,y0],[x1,y0],[x1,y1],[x0,y1]], dtype=np.float32)
         pts_h = np.concatenate([pts, np.ones((4,1), dtype=np.float32)], axis=1)
@@ -42,7 +42,7 @@ def transform_labels_after_perspective_warp(
         warped = warped[:, :2] / warped[:, 2:3]
         wx0, wy0 = warped.min(axis=0)
         wx1, wy1 = warped.max(axis=0)
-        out.append(_pixels_to_yolo(cls, wx0, wy0, wx1, wy1, Ho, Wo))
+        out.append(pixels_to_yolo(cls, wx0, wy0, wx1, wy1, Ho, Wo))
     # filter invalid (zero-area) boxes
     return [b for b in out if b[3] > 0.0 and b[4] > 0.0]
 
@@ -270,6 +270,8 @@ def draw_bbox(img, bbox, class_name, box_color=None, cls: Optional[int] = None, 
             box_color = (int(100 + c) % 255, int(170 + c * 2) % 255, int(200 + c * 3) % 255)
         else:
             box_color = Colors.BOX_COLOR.value
+    else:
+        box_color = (box_color[2], box_color[1], box_color[0]) # RGB -> BGR
 
     x_min, y_min, w, h = bbox
     x_min, x_max, y_min, y_max = int(x_min), int(x_min + w), int(y_min), int(y_min + h)

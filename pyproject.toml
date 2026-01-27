@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "IMUtils"
-version = "1.0.3"
+version = "1.0.4"
 description = "A Helper to deal with images and training data"
 authors = ["André L.S. Meirelles <alsmeirelles@gmail.com>"]
 license = "MIT"

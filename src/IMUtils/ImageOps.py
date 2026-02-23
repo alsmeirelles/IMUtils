@@ -118,9 +118,11 @@ def image_rotate(im, orientation=None, rnumpy=False, conditional=False):
         return im
 
     if isinstance(im, np.ndarray):
-        im = Image.fromarray(im[:, :, ::-1]) # BGR -> RGB for PIL
+        im = Image.fromarray(im[:, :, ::-1])  # BGR -> RGB for PIL
     elif isinstance(im, str):
-        im = read_image(im, False) # Image.open(im)
+        im = read_image(im, False)  # Image.open(im)
+    else:
+        raise TypeError(f"Unsupported image type: {type(im)}")
 
     apply_rotation = not conditional or ((orientation == "v" and im.width > im.height) or
                                          (orientation == "h" and im.height > im.width))
@@ -190,7 +192,7 @@ def visualize(image, bboxes, category_ids=None, category_id_to_name: dict = None
 
 def write_image(img, path: str):
     if isinstance(img, np.ndarray):
-        Image.fromarray(img[:, :, ::-1]).save(path) # BGR -> RGB before saving PIL
+        Image.fromarray(img[:, :, ::-1]).save(path)  # BGR -> RGB before saving PIL
     elif isinstance(img, Image.Image):
         img.save(path)
 
@@ -205,7 +207,7 @@ def read_image(path: str | Path, rnumpy=False):
     im = Image.open(path)
     im = ImageOps.exif_transpose(im)
     if rnumpy:
-        return np.array(im)[:, :, ::-1] # BGR numpy array
+        return np.array(im)[:, :, ::-1]  # BGR numpy array
     else:
         return im
 

@@ -6,7 +6,7 @@ BBoxYolo = Tuple[int, float, float, float, float]  # (cls, cx, cy, w, h) YOLO fo
 
 class Colors(Enum):
     BOX_COLOR = (255, 0, 0)  # Red
-    TEXT_COLOR = (255, 255, 255)  # White
+    TEXT_COLOR = (0, 0, 0)  # Black
 
 @dataclass(frozen=True)
 class LetterboxParams:

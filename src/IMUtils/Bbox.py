@@ -5,29 +5,42 @@ from typing import List, Tuple, Optional
 # Locals
 from .Types import BBoxYolo, Colors, LetterboxParams
 
-def yolo_to_pixels(box: BBoxYolo, H: int, W: int) -> Tuple[int,int,int,int]:
+
+def yolo_to_pixels(box: BBoxYolo, H: int, W: int) -> Tuple[int, int, int, int]:
     cls, cx, cy, w, h = box
-    px = cx * W; py = cy * H; pw = w * W; ph = h * H
-    x0 = px - pw/2; y0 = py - ph/2
-    x1 = px + pw/2; y1 = py + ph/2
+    px = cx * W;
+    py = cy * H;
+    pw = w * W;
+    ph = h * H
+    x0 = px - pw / 2;
+    y0 = py - ph / 2
+    x1 = px + pw / 2;
+    y1 = py + ph / 2
     return int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1))
 
+
 def pixels_to_yolo(cls: int, x0: float, y0: float, x1: float, y1: float, H: int, W: int) -> BBoxYolo:
-    x0 = max(0, min(W-1, x0)); x1 = max(0, min(W-1, x1))
-    y0 = max(0, min(H-1, y0)); y1 = max(0, min(H-1, y1))
+    x0 = max(0, min(W - 1, x0));
+    x1 = max(0, min(W - 1, x1))
+    y0 = max(0, min(H - 1, y0));
+    y1 = max(0, min(H - 1, y1))
     if x1 <= x0 or y1 <= y0:
         return (cls, 0.0, 0.0, 0.0, 0.0)
     cx = ((x0 + x1) / 2.0) / W
     cy = ((y0 + y1) / 2.0) / H
-    w  = (x1 - x0) / W
-    h  = (y1 - y0) / H
+    w = (x1 - x0) / W
+    h = (y1 - y0) / H
     return cls, float(cx), float(cy), float(w), float(h)
 
+
 def transform_labels_after_perspective_warp(
-    labels: List[BBoxYolo],
-    Hmat: np.ndarray,
-    in_size: Tuple[int,int],   # (H, W) BEFORE warp
-    out_size: Tuple[int,int],  # (H, W) AFTER warp
+        labels: List[BBoxYolo],
+        Hmat: np.ndarray,
+        in_size: Tuple[int, int],  # (H, W) BEFORE warp
+        out_size: Tuple[int, int],  # (H, W) AFTER warp
+        max_elongate: float = 0.0,  # Max relation between widht and height
+        min_dimension: float = 0.0,
+        min_area: float = 0.0,
 ) -> List[BBoxYolo]:
     Hi, Wi = in_size
     Ho, Wo = out_size
@@ -36,21 +49,38 @@ def transform_labels_after_perspective_warp(
         cls = box[0]
         x0, y0, x1, y1 = yolo_to_pixels(box, Hi, Wi)
         # 4 corners
-        pts = np.array([[x0,y0],[x1,y0],[x1,y1],[x0,y1]], dtype=np.float32)
-        pts_h = np.concatenate([pts, np.ones((4,1), dtype=np.float32)], axis=1)
+        pts = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float32)
+        pts_h = np.concatenate([pts, np.ones((4, 1), dtype=np.float32)], axis=1)
         warped = (Hmat @ pts_h.T).T
         warped = warped[:, :2] / warped[:, 2:3]
         wx0, wy0 = warped.min(axis=0)
         wx1, wy1 = warped.max(axis=0)
-        out.append(pixels_to_yolo(cls, wx0, wy0, wx1, wy1, Ho, Wo))
-    # filter invalid (zero-area) boxes
-    return [b for b in out if b[3] > 0.0 and b[4] > 0.0]
+        wx0, wx1 = sorted((wx0, wx1))
+        wy0, wy1 = sorted((wy0, wy1))
+
+        wx0 = float(max(0.0, min(Wo - 1.0, wx0)))
+        wy0 = float(max(0.0, min(Ho - 1.0, wy0)))
+        wx1 = float(max(0.0, min(Wo - 1.0, wx1)))
+        wy1 = float(max(0.0, min(Ho - 1.0, wy1)))
+
+        bw = wx1 - wx0
+        bh = wy1 - wy0
+
+        if bw <= 0 or bh <= 0:
+            continue
+
+        aspect = max(bw, bh) / min(bw, bh)
+        dimension_ok = bw > min_dimension and bh > min_dimension
+        if aspect <= max_elongate or dimension_ok:
+            out.append(pixels_to_yolo(cls, wx0, wy0, wx1, wy1, Ho, Wo))
+    return out
+
 
 def transform_labels_after_resize_with_pad(
-    labels: list[tuple[int, float, float, float, float]],
-    H0: int,
-    W0: int,
-    params  # LetterboxParams(ratio: float, new_size: (new_w, new_h), pad: (left, top, right, bottom))
+        labels: list[tuple[int, float, float, float, float]],
+        H0: int,
+        W0: int,
+        params  # LetterboxParams(ratio: float, new_size: (new_w, new_h), pad: (left, top, right, bottom))
 ) -> list[BBoxYolo]:
     """
     Adjust YOLO-normalized boxes after resize_with_pad.
@@ -60,8 +90,8 @@ def transform_labels_after_resize_with_pad(
     - Applies: scale by ratio, then shift by (left, top), then renormalize by final size.
     """
     ratio = float(params.ratio)
-    new_w, new_h = params.new_size        # (width, height) after scaling
-    left, top, right, bottom = params.pad # (l, t, r, b) – important
+    new_w, new_h = params.new_size  # (width, height) after scaling
+    left, top, right, bottom = params.pad  # (l, t, r, b) – important
 
     Wt_final = int(new_w + left + right)
     Ht_final = int(new_h + top + bottom)
@@ -71,26 +101,27 @@ def transform_labels_after_resize_with_pad(
         # denormalize in ORIGINAL image coords
         cx_px = cx * W0
         cy_px = cy * H0
-        w_px  = w  * W0
-        h_px  = h  * H0
+        w_px = w * W0
+        h_px = h * H0
 
         # scale then pad shift
         cx_px = cx_px * ratio + left
         cy_px = cy_px * ratio + top
-        w_px  = w_px  * ratio
-        h_px  = h_px  * ratio
+        w_px = w_px * ratio
+        h_px = h_px * ratio
 
         # renormalize to FINAL canvas (with pad)
         cx2 = cx_px / Wt_final
         cy2 = cy_px / Ht_final
-        w2  = w_px  / Wt_final
-        h2  = h_px  / Ht_final
+        w2 = w_px / Wt_final
+        h2 = h_px / Ht_final
 
         # keep only positive boxes
         if w2 > 0.0 and h2 > 0.0:
             out.append((int(cls), float(cx2), float(cy2), float(w2), float(h2)))
 
     return out
+
 
 def adjust_box_90degree(orientation: str, original_bbox: list | tuple) -> tuple[int, float, float, float, float]:
     """
@@ -248,7 +279,7 @@ def bbox_convert(gtr, oshape, verbose=0):
     return f1, f2
 
 
-def draw_bbox(img, bbox, class_name, box_color=None, cls: Optional[int] = None, thickness:int = -1, draw_text=True):
+def draw_bbox(img, bbox, class_name, box_color=None, cls: Optional[int] = None, thickness: int = -1, draw_text=True):
     """
     Visualizes a single bounding box on the image.
     Parameters:
@@ -271,7 +302,7 @@ def draw_bbox(img, bbox, class_name, box_color=None, cls: Optional[int] = None, 
         else:
             box_color = Colors.BOX_COLOR.value
     else:
-        box_color = (box_color[2], box_color[1], box_color[0]) # RGB -> BGR
+        box_color = (box_color[2], box_color[1], box_color[0])  # RGB -> BGR
 
     x_min, y_min, w, h = bbox
     x_min, x_max, y_min, y_max = int(x_min), int(x_min + w), int(y_min), int(y_min + h)
@@ -284,7 +315,8 @@ def draw_bbox(img, bbox, class_name, box_color=None, cls: Optional[int] = None, 
 
     if draw_text:
         font_scale = max(0.4, min(1.6, thickness * 0.6))
-        ((text_width, text_height), _) = cv2.getTextSize(class_name, cv2.FONT_HERSHEY_SIMPLEX, font_scale, max(1, thickness-1))
+        ((text_width, text_height), _) = cv2.getTextSize(class_name, cv2.FONT_HERSHEY_SIMPLEX, font_scale,
+                                                         max(1, thickness - 1))
         cv2.rectangle(img, (x_min, y_min - int(1.3 * text_height)), (x_min + text_width, y_min), box_color, -1)
         cv2.putText(
             img,

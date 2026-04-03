@@ -40,7 +40,6 @@ def transform_labels_after_perspective_warp(
         out_size: Tuple[int, int],  # (H, W) AFTER warp
         max_elongate: float = 0.0,  # Max relation between widht and height
         min_dimension: float = 0.0,
-        min_area: float = 0.0,
 ) -> List[BBoxYolo]:
     Hi, Wi = in_size
     Ho, Wo = out_size

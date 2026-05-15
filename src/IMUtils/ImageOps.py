@@ -6,6 +6,13 @@ from PIL import Image, ImageOps
 from typing import Tuple
 from pathlib import Path
 
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    HAS_HEIF = True
+except ImportError:
+    HAS_HEIF = False
+
 # Local imports
 from .Bbox import bbox_convert, draw_bbox
 from .Types import LetterboxParams
@@ -153,8 +160,8 @@ def visualize(image, bboxes, category_ids=None, category_id_to_name: dict = None
     @param draw_categories: Boolean, draw categories text along bboxes
     """
     try:
-        import matplotlib
-        matplotlib.use("GTK3Agg")  # Set GTK as the backend only if needed
+        # import matplotlib
+        # matplotlib.use("GTK3Agg")  # Set GTK as the backend only if needed
         import matplotlib.pyplot as plt
     except ImportError as e:
         raise RuntimeError(
@@ -203,10 +210,13 @@ def read_image(path: str | Path, rnumpy=False):
     @param path: Path to image
     @param rnumpy: Boolean, return NDARRAY (BGR)
     """
+    path = Path(path)
 
     im = Image.open(path)
     im = ImageOps.exif_transpose(im)
     if rnumpy:
+        if HAS_HEIF and path.suffix.lower() in ['.heic', '.heif']:
+            im = im.convert("RGB")
         return np.array(im)[:, :, ::-1]  # BGR numpy array
     else:
         return im

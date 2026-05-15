@@ -20,47 +20,62 @@ from .ImageOps import image_rotate
 # Searches for known video files in source directory
 extensions = ['mp4', 'avi']
 
+
 def preprocess_frame(
-    frame_bgr: np.ndarray,
-    *,
-    force_landscape: bool = True,
-    crop_region: bool = False,
-    region_bgr: Optional[Tuple[int, int, int]] = None,
-    region_tol_h: int = 16,
-    region_tol_s: int = 80,
-    region_tol_v: int = 80,
-    region_margin_px: int = 24,
-    region_min_area_frac: float = 0.05,
-    region_close_x_frac: float = 1/18,
-    region_close_y_frac: float = 1/120,
-    region_row_thresh: Optional[float] = None,
-    region_row_min_run_frac: float = 0.35,
-    debug_dir: Optional[str] = None,
-    debug_prefix: str = "frame",
+        frame_bgr: np.ndarray,
+        *,
+        force_landscape: bool = True,
+        crop_region: bool = False,
+        region_bgr: Optional[Tuple[int, int, int]] = None,
+        region_tol_h: int = 16,
+        region_tol_s: int = 80,
+        region_tol_v: int = 80,
+        region_margin_px: int = 24,
+        region_min_area_frac: float = 0.05,
+        region_close_x_frac: float = 1 / 18,
+        region_close_y_frac: float = 1 / 120,
+        region_row_thresh: Optional[float] = None,
+        region_row_min_run_frac: float = 0.35,
+        debug_dir: Optional[str] = None,
+        debug_prefix: str = "frame",
 ) -> np.ndarray:
     """
-    Fast, in-memory preprocessing before saving a frame.
+    Processes a given video frame by adjusting orientation and optionally cropping a specific region based on color.
 
-    Steps:
-      1) Optional: rotate to landscape (width > height).
-      2) Optional: crop the largest region that matches the provided BACKGROUND color
-         (e.g., the blue conveyor) + small margin. Pure crop (no resize), so aspect is preserved.
+    This function is designed to process an input frame by first ensuring its orientation is in landscape format if
+    required, and then optionally cropping a region of interest based on specified color and geometric constraints.
+    It supports debugging options to save intermediate outputs for analysis.
 
-    Args:
-        frame_bgr: Raw frame in BGR.
-        force_landscape: If True, rotates 90° when H > W.
-        crop_background_bgr: If given, perform color-based crop using this (B,G,R).
-        crop_tol_*: HSV tolerances for robust color selection.
-        crop_margin_px: Uniform expansion around the detected region.
-        crop_min_area_frac: Reject tiny blobs.
+    Parameters:
+    frame_bgr (np.ndarray): The input frame in BGR color space.
+    force_landscape (bool): Specifies whether to rotate the frame to landscape orientation. Defaults to True.
+    crop_region (bool): Indicates whether to perform region cropping based on color. Defaults to False.
+    region_bgr (Optional[Tuple[int, int, int]]): The expected background color of the region specified as a BGR tuple.
+        If None, region cropping is skipped. Defaults to None.
+    region_tol_h (int): Tolerance for hue difference when identifying the region. Defaults to 16.
+    region_tol_s (int): Tolerance for saturation difference when identifying the region. Defaults to 80.
+    region_tol_v (int): Tolerance for value (brightness) difference when identifying the region. Defaults to 80.
+    region_margin_px (int): Margin in pixels around detected regions to include in cropping. Defaults to 24.
+    region_min_area_frac (float): Minimum acceptable area fraction of the detected region relative to the input frame.
+        Defaults to 0.05.
+    region_close_x_frac (float): Fraction of the frame width for performing morphological closing in the x-axis during
+        region detection. Defaults to 1/18.
+    region_close_y_frac (float): Fraction of the frame height for performing morphological closing in the y-axis during
+        region detection. Defaults to 1/120.
+    region_row_thresh (Optional[float]): Threshold for the minimum acceptable color coverage in a row for it to be
+        considered part of a region. If None, row thresholds are not checked. Defaults to None.
+    region_row_min_run_frac (float): Minimum fraction of rows in the frame that must meet the row coverage threshold for
+        a region to be considered valid. Defaults to 0.35.
+    debug_dir (Optional[str]): Directory to save debug images. If None, debug images are not saved. Defaults to None.
+    debug_prefix (str): Prefix for debug filenames if debug mode is enabled. Defaults to "frame".
 
     Returns:
-        The processed BGR frame.
+    np.ndarray: The processed frame in BGR color space, either with adjusted orientation or cropped as specified.
     """
     out = frame_bgr
 
     if force_landscape and out.shape[0] > out.shape[1]:
-        out, _ = image_rotate(out, orientation="h",rnumpy=True, conditional=True)
+        out, _ = image_rotate(out, orientation="h", rnumpy=True, conditional=True)
 
     if crop_region:
         out, _ = crop_color_region(
@@ -79,6 +94,7 @@ def preprocess_frame(
             debug_prefix=debug_prefix
         )
     return out
+
 
 def run_annotated_frame_extraction(config: argparse.Namespace):
     """
@@ -169,7 +185,7 @@ def run_frame_extraction(config: argparse.Namespace):
         with ThreadPoolExecutor(max_workers=config.cpu) as executor:
             for f in input_files:
                 extractor_params = (os.path.join(config.vdata, f),) + common_params
-                ex = executor.submit(_run_extractor,*extractor_params)
+                ex = executor.submit(_run_extractor, *extractor_params)
                 ex.add_done_callback(lambda x: bar.update(1))
                 videos[ex] = f
 
@@ -189,20 +205,20 @@ def run_frame_extraction(config: argparse.Namespace):
 
 
 def _run_extractor(video_path: str, dst_dir: str, nfps: int,
-                   force_landscape:bool = True,
-                   crop_region:bool = True,
-                   region_bgr:Tuple[int, int, int, int] = None,
-                   region_tol_h:int = 0,
-                   region_tol_s:int = 0,
-                   region_tol_v:int = 0,
-                   region_margin_px:int=15,
-                   region_min_area_frac:float = 0.25,
-                   region_close_x_frac:float = 0.1,
-                   region_close_y_frac:float = 0.1,
-                   region_row_thresh:float | None = None,
-                   region_row_min_run_frac:float = 0.2,
-                   debug_dir:str | None = None,
-                   debug_prefix:str | None = None,
+                   force_landscape: bool = True,
+                   crop_region: bool = True,
+                   region_bgr: Tuple[int, int, int, int] = None,
+                   region_tol_h: int = 0,
+                   region_tol_s: int = 0,
+                   region_tol_v: int = 0,
+                   region_margin_px: int = 15,
+                   region_min_area_frac: float = 0.25,
+                   region_close_x_frac: float = 0.1,
+                   region_close_y_frac: float = 0.1,
+                   region_row_thresh: float | None = None,
+                   region_row_min_run_frac: float = 0.2,
+                   debug_dir: str | None = None,
+                   debug_prefix: str | None = None,
                    verbosity: int = 0,
                    sufix: str = ''):
     """

@@ -1,0 +1,13 @@
+tests/samples
+debug/
+.venv/
+*.lock
+
+# Python build artifacts
+dists/
+dist/
+build/
+*.egg-info/
+src/*.egg-info/
+*/__pycache__/
+*.whl

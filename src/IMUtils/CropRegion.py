@@ -123,14 +123,17 @@ def _color_mask(
     if background_bgr is not None:
         target = np.uint8([[list(background_bgr)]])
         th, ts, tv = cv2.cvtColor(target, cv2.COLOR_BGR2HSV)[0, 0]
+        use_upper_sv_caps = True
     else:
         th_est = _estimate_region_hue_hsv(hsv)
         if th_est is None:
-            th, ts, tv = 100, 120, 160  # generic cyan/blue
+            th = 100
         else:
-            th, ts, tv = th_est, 120, 160
+            th = th_est
+        ts, tv = 255, 255
+        use_upper_sv_caps = False
 
-    th = int(th);
+    th = int(th)
     tol_h = int(tol_h)
 
     # Hue mask with wrap-around handling, using NumPy (not cv2.inRange)
@@ -151,8 +154,12 @@ def _color_mask(
         s_min, v_min = SV_FLOOR_S, SV_FLOOR_V
 
     # Upper caps based on provided tol around the hint center (cast to int first!)
-    s_max = min(255, int(ts) + int(tol_s))
-    v_max = min(255, int(tv) + int(tol_v))
+    if use_upper_sv_caps:
+        s_max = min(255, int(ts) + int(tol_s))
+        v_max = min(255, int(tv) + int(tol_v))
+    else:
+        s_max = 255
+        v_max = 255
 
     # Final S/V masks via NumPy; convert to uint8 0/255 at the end
     s_ok = (S.astype(np.int16) >= s_min) & (S.astype(np.int16) <= s_max)
@@ -161,95 +168,138 @@ def _color_mask(
     mask_bool = hue_mask & s_ok & v_ok
     return mask_bool.astype(np.uint8) * 255
 
+def _suppress_specular_glare_for_detection(image_bgr: np.ndarray) -> np.ndarray:
+    """Return a detection-only copy with narrow specular highlights softened."""
+    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    _, s, v = cv2.split(hsv)
+
+    v_thr = max(240, int(np.percentile(v, 99.5)) - 2)
+    mask = ((v >= v_thr) & (s <= 80)).astype(np.uint8) * 255
+
+    # Avoid inpainting the whole white board when exposure is globally high.
+    if cv2.countNonZero(mask) > 0.08 * image_bgr.shape[0] * image_bgr.shape[1]:
+        return image_bgr
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    mask = cv2.dilate(mask, kernel, iterations=1)
+
+    return cv2.inpaint(image_bgr, mask, 5, cv2.INPAINT_TELEA)
+
+
+def _foreground_bbox(mask: np.ndarray, *, min_component_area: float) -> Optional[Tuple[int, int, int, int]]:
+    """Bounding box around all non-trivial foreground components."""
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    boxes = [cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) >= min_component_area]
+    if not boxes:
+        return None
+
+    x0 = min(x for x, _, _, _ in boxes)
+    y0 = min(y for _, y, _, _ in boxes)
+    x1 = max(x + w for x, _, w, _ in boxes)
+    y1 = max(y + h for _, y, _, h in boxes)
+    return x0, y0, x1 - x0, y1 - y0
+
+
+def _odd_at_least(value: int, minimum: int = 3) -> int:
+    """Return the smallest odd integer greater than or equal to `value`."""
+    value = max(int(value), minimum)
+    return value if value % 2 else value + 1
+
 # ---------------------- Public functions ----------------------------------------------------
 
 def crop_white_board(
     image: np.ndarray,
     *,
-    expand_px: int = 20,             # desired padding
-    max_expand_frac: float = 0.12,   # cap each side's expansion
-    min_area_frac: float = 0.10,     # board must cover ≥10% of frame
-    robustness: int = 2              # how many times to relax thresholds if area too small
+    expand_px: int = 20,
+    max_expand_frac: float = 0.12,
+    min_area_frac: float = 0.10,
+    robustness: int = 2,
+    suppress_glare: bool = True,
 ):
     """
-    Adaptive white-board crop that is robust to darker shots.
-    Returns (crop, (x,y,w,h)).
+    Adaptive white-board crop.
+
+    The crop is detected on a temporary, glare-softened image, but the returned
+    crop is always taken from the original image. This keeps preprocessing
+    output unchanged while making board localization more stable.
     """
     H, W = image.shape[:2]
+    frame_area = W * H
+
     max_expand_px = int(min(H, W) * max_expand_frac)
     expand_px = int(np.clip(expand_px, 0, max_expand_px))
 
-    # --- 1) Local contrast normalization (helps low light / vignetting)
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    det_img = _suppress_specular_glare_for_detection(image) if suppress_glare else image
+
+    # Local contrast normalization helps low light / vignetting.
+    lab = cv2.cvtColor(det_img, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    Lc = clahe.apply(L)
-    img_eq = cv2.cvtColor(cv2.merge([Lc, A, B]), cv2.COLOR_LAB2BGR)
+    img_eq = cv2.cvtColor(cv2.merge([clahe.apply(L), A, B]), cv2.COLOR_LAB2BGR)
 
-    # Precompute channels we’ll use repeatedly
     hsv = cv2.cvtColor(img_eq, cv2.COLOR_BGR2HSV)
-    Hh, Ss, Vv = cv2.split(hsv)
-    lab2 = cv2.cvtColor(img_eq, cv2.COLOR_BGR2LAB)
-    L2, A2, B2 = cv2.split(lab2)
+    _, Ss, Vv = cv2.split(hsv)
+    lab_eq = cv2.cvtColor(img_eq, cv2.COLOR_BGR2LAB)
+    L2, A2, B2 = cv2.split(lab_eq)
 
-    # Structuring elements
-    k7 = np.ones((7, 7), np.uint8)
-    k11 = np.ones((11, 11), np.uint8)
+    # Proportional kernels bridge printed grid lines and glare seams without
+    # requiring callers to know anything about these artifacts.
+    k_small = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (_odd_at_least(W * 0.012, 7), _odd_at_least(H * 0.012, 7)),
+    )
+    k_bridge = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (_odd_at_least(W * 0.035, 15), _odd_at_least(H * 0.035, 15)),
+    )
 
-    # --- 2) Try with progressively more permissive thresholds
-    best_rect = (0, 0, W, H)
-    best_area = 0
+    best_rect: Optional[Tuple[int, int, int, int]] = None
+    best_area = 0.0
 
     for relax in range(robustness + 1):
-        # HSV near-white (low S, high V) with ADAPTIVE cutoffs
-        s_max = 60 + 20 * relax                         # allow a little more saturation each step
-        v_base_pct = max(40, 75 - 10 * relax)           # percentile to define "bright"
-        v_lo = int(np.percentile(Vv, v_base_pct))       # adapt to brightness
-        v_lo = max(100 - 20 * relax, v_lo - 10)         # don't go too low; allow some relaxation
-
+        s_max = 60 + 20 * relax
+        v_pct = max(40, 75 - 10 * relax)
+        v_lo = max(100 - 20 * relax, int(np.percentile(Vv, v_pct)) - 10)
         mask_hsv = (Ss < s_max) & (Vv > v_lo)
 
-        # LAB near-neutral (white/grey) + high L*
-        ab_tol = 12 + 6 * relax                         # widen neutrality band
-        l_pct = max(35, 60 - 10 * relax)                # percentile for L* threshold
-        l_lo = int(np.percentile(L2, l_pct))
-        l_lo = max(90 - 15 * relax, l_lo - 5)
+        ab_tol = 12 + 6 * relax
+        l_pct = max(35, 60 - 10 * relax)
+        l_lo = max(90 - 15 * relax, int(np.percentile(L2, l_pct)) - 5)
         mask_lab = (np.abs(A2.astype(np.int16) - 128) < ab_tol) & \
                    (np.abs(B2.astype(np.int16) - 128) < ab_tol) & \
                    (L2 > l_lo)
 
-        mask = (mask_hsv | mask_lab).astype(np.uint8) * 255
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k7, iterations=2)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k7, iterations=1)
-        mask = cv2.dilate(mask, k11, iterations=1)
+        mask = ((mask_hsv | mask_lab).astype(np.uint8)) * 255
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_small, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k_small, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_bridge, iterations=1)
 
-        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not cnts:
+        # Use the union of meaningful components, not only the largest contour.
+        # This avoids mid-board cuts when grid lines or glare split the white mask.
+        rect = _foreground_bbox(mask, min_component_area=0.0025 * frame_area)
+        if rect is None:
             continue
 
-        c = max(cnts, key=cv2.contourArea)
-        area = cv2.contourArea(c)
+        x, y, w, h = rect
+        area = float(w * h)
         if area > best_area:
-            x, y, w, h = cv2.boundingRect(c)
-            best_rect = (x, y, w, h)
+            best_rect = rect
             best_area = area
 
-        # Stop early if it looks like the board (enough area)
-        if area >= min_area_frac * (W * H):
+        if area >= min_area_frac * frame_area:
             break
 
-    # If nothing reasonable, fall back to full frame
-    x, y, w, h = best_rect
-    if best_area < min_area_frac * (W * H):
+    if best_rect is None or best_area < min_area_frac * frame_area:
         return image, (0, 0, W, H)
 
-    # --- 3) Apply padding with max-expand clamp and image bounds
+    x, y, w, h = best_rect
+
     x0 = max(0, x - expand_px)
     y0 = max(0, y - expand_px)
     x1 = min(W, x + w + expand_px)
     y1 = min(H, y + h + expand_px)
 
-    # enforce per-side cap
     x0 = max(x - max_expand_px, x0)
     y0 = max(y - max_expand_px, y0)
     x1 = min(x + w + max_expand_px, x1)

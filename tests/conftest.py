@@ -25,6 +25,18 @@ import numpy as np
 import pytest
 from PIL import Image
 
+def require_sample(samples_dir: Path, filename: str) -> Path:
+    """
+    Return a real sample path or skip the test when it is unavailable.
+
+    This allows tests to be committed while keeping large/private image
+    samples outside Git.
+    """
+    path = samples_dir / filename
+    if not path.is_file():
+        pytest.skip(f"Missing optional real sample: {path}")
+    return path
+
 
 @pytest.fixture(scope="session")
 def samples_dir() -> Path:
@@ -77,6 +89,14 @@ def rgb_pil_image() -> Image.Image:
     array[:, :, 2] = 10   # B
     return Image.fromarray(array, mode="RGB")
 
+@pytest.fixture()
+def synthetic_empty_image() -> np.ndarray:
+    """
+    Create a fully black BGR image with no detectable foreground.
+
+    This is intended to force crop_white_board's emergency fallback path.
+    """
+    return np.zeros((240, 420, 3), dtype=np.uint8)
 
 @pytest.fixture()
 def sample_jpeg_path(tmp_path: Path, bgr_test_image: np.ndarray) -> Path:
@@ -91,18 +111,6 @@ def sample_jpeg_path(tmp_path: Path, bgr_test_image: np.ndarray) -> Path:
     assert ok, f"Failed to write temporary test image: {path}"
     return path
 
-
-def require_sample(samples_dir: Path, filename: str) -> Path:
-    """
-    Return a real sample path or skip the test when it is unavailable.
-
-    This allows tests to be committed while keeping large/private image
-    samples outside Git.
-    """
-    path = samples_dir / filename
-    if not path.is_file():
-        pytest.skip(f"Missing optional real sample: {path}")
-    return path
 
 @pytest.fixture()
 def synthetic_white_board_image() -> np.ndarray:
@@ -141,6 +149,53 @@ def synthetic_white_board_with_glare() -> np.ndarray:
     cv2.ellipse(image, (250, 150), (18, 90), 10, 0, 360, (255, 255, 255), -1)
 
     return image
+
+@pytest.fixture()
+def synthetic_global_board_image() -> np.ndarray:
+    """
+    Create a synthetic full-frame BGR image with a skewed white board.
+
+    The board is intentionally drawn as a quadrilateral with a physical aspect
+    ratio close to CropRegion.crop_white_board's default board_ratio:
+        450 / 220 ~= 2.045
+
+    The interior contains grid-like texture so the warp is not rejected as
+    overly smooth by downstream image checks.
+    """
+    image = np.full((360, 640, 3), fill_value=(30, 30, 30), dtype=np.uint8)
+
+    board_pts = np.array(
+        [
+            [95, 95],    # top-left
+            [535, 70],   # top-right
+            [560, 285],  # bottom-right
+            [75, 305],   # bottom-left
+        ],
+        dtype=np.int32,
+    )
+
+    cv2.fillConvexPoly(image, board_pts, (240, 240, 240))
+    cv2.polylines(image, [board_pts], isClosed=True, color=(10, 10, 10), thickness=3)
+
+    # Grid / internal texture.
+    for x in range(135, 515, 55):
+        cv2.line(image, (x, 95), (x + 20, 285), (170, 170, 170), thickness=1)
+    for y in range(125, 275, 35):
+        cv2.line(image, (95, y), (545, y - 20), (170, 170, 170), thickness=1)
+
+    # A few dark label-like marks.
+    cv2.rectangle(image, (180, 150), (220, 180), (40, 40, 40), thickness=-1)
+    cv2.rectangle(image, (330, 190), (380, 220), (60, 60, 60), thickness=-1)
+
+    return image
+
+
+@pytest.fixture()
+def synthetic_blank_image() -> np.ndarray:
+    """
+    Create a blank BGR image with no detectable board.
+    """
+    return np.full((240, 420, 3), fill_value=(30, 30, 30), dtype=np.uint8)
 
 
 @pytest.fixture()

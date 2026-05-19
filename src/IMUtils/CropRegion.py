@@ -168,146 +168,204 @@ def _color_mask(
     mask_bool = hue_mask & s_ok & v_ok
     return mask_bool.astype(np.uint8) * 255
 
-def _suppress_specular_glare_for_detection(image_bgr: np.ndarray) -> np.ndarray:
-    """Return a detection-only copy with narrow specular highlights softened."""
-    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-    _, s, v = cv2.split(hsv)
-
-    v_thr = max(240, int(np.percentile(v, 99.5)) - 2)
-    mask = ((v >= v_thr) & (s <= 80)).astype(np.uint8) * 255
-
-    # Avoid inpainting the whole white board when exposure is globally high.
-    if cv2.countNonZero(mask) > 0.08 * image_bgr.shape[0] * image_bgr.shape[1]:
-        return image_bgr
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-    mask = cv2.dilate(mask, kernel, iterations=1)
-
-    return cv2.inpaint(image_bgr, mask, 5, cv2.INPAINT_TELEA)
-
-
-def _foreground_bbox(mask: np.ndarray, *, min_component_area: float) -> Optional[Tuple[int, int, int, int]]:
-    """Bounding box around all non-trivial foreground components."""
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    boxes = [cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) >= min_component_area]
-    if not boxes:
-        return None
-
-    x0 = min(x for x, _, _, _ in boxes)
-    y0 = min(y for _, y, _, _ in boxes)
-    x1 = max(x + w for x, _, w, _ in boxes)
-    y1 = max(y + h for _, y, _, h in boxes)
-    return x0, y0, x1 - x0, y1 - y0
-
-
 def _odd_at_least(value: int, minimum: int = 3) -> int:
-    """Return the smallest odd integer greater than or equal to `value`."""
+    """
+    Return the smallest odd integer greater than or equal to value.
+    OpenCV morphology kernels work better with odd dimensions.
+    """
     value = max(int(value), minimum)
     return value if value % 2 else value + 1
+
+
+def _order_points_strictly(pts: np.ndarray) -> np.ndarray:
+    """
+    Chronologically orders 4 corners into an absolute spatial map:
+    [Top-Left, Top-Right, Bottom-Right, Bottom-Left]
+    Ensures zero point-swapping to eliminate shearing or twisting warps.
+    """
+    # Sort points based on X-coordinates (left-to-right)
+    x_sorted = pts[np.argsort(pts[:, 0]), :]
+
+    # Isolate left pairs and right pairs
+    left_chunk = x_sorted[:2, :]
+    right_chunk = x_sorted[2:, :]
+
+    # Sort left pair by Y-coordinate to isolate Top-Left and Bottom-Left
+    tl = left_chunk[np.argmin(left_chunk[:, 1])]
+    bl = left_chunk[np.argmax(left_chunk[:, 1])]
+
+    # Sort right pair by Y-coordinate to isolate Top-Right and Bottom-Right
+    tr = right_chunk[np.argmin(right_chunk[:, 1])]
+    br = right_chunk[np.argmax(right_chunk[:, 1])]
+
+    return np.array([tl, tr, br, bl], dtype=np.float32)
+
 
 # ---------------------- Public functions ----------------------------------------------------
 
 def crop_white_board(
     image: np.ndarray,
     *,
-    expand_px: int = 20,
-    max_expand_frac: float = 0.12,
+    board_ratio: Optional[float] = None,
+    expand_px: int = 10,
+    max_expand_frac: float = 0.08,
     min_area_frac: float = 0.10,
-    robustness: int = 2,
-    suppress_glare: bool = True,
-):
+    image_name: str = "unknown",
+) -> tuple[np.ndarray, tuple[int, int, int, int], np.ndarray, tuple[int, int]]:
     """
-    Adaptive white-board crop.
+    Unified global perspective board cropper.
+    Computes a clean global homography matrix from full-frame to target crop coordinates,
+    ensuring labels maintain their correct square shape without horizontal elongation.
 
-    The crop is detected on a temporary, glare-softened image, but the returned
-    crop is always taken from the original image. This keeps preprocessing
-    output unchanged while making board localization more stable.
+    Returns:
+        (warped_crop, (x, y, w, h), global_homography_matrix, (out_h, out_w))
     """
     H, W = image.shape[:2]
-    frame_area = W * H
 
-    max_expand_px = int(min(H, W) * max_expand_frac)
-    expand_px = int(np.clip(expand_px, 0, max_expand_px))
-
-    det_img = _suppress_specular_glare_for_detection(image) if suppress_glare else image
-
-    # Local contrast normalization helps low light / vignetting.
-    lab = cv2.cvtColor(det_img, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    img_eq = cv2.cvtColor(cv2.merge([clahe.apply(L), A, B]), cv2.COLOR_LAB2BGR)
-
-    hsv = cv2.cvtColor(img_eq, cv2.COLOR_BGR2HSV)
-    _, Ss, Vv = cv2.split(hsv)
-    lab_eq = cv2.cvtColor(img_eq, cv2.COLOR_BGR2LAB)
-    L2, A2, B2 = cv2.split(lab_eq)
-
-    # Proportional kernels bridge printed grid lines and glare seams without
-    # requiring callers to know anything about these artifacts.
-    k_small = cv2.getStructuringElement(
-        cv2.MORPH_RECT,
-        (_odd_at_least(W * 0.012, 7), _odd_at_least(H * 0.012, 7)),
-    )
-    k_bridge = cv2.getStructuringElement(
-        cv2.MORPH_RECT,
-        (_odd_at_least(W * 0.035, 15), _odd_at_least(H * 0.035, 15)),
+    # Target physical aspect ratio baseline (450x220mm)
+    base_ratio = (
+        float(board_ratio)
+        if (board_ratio is not None and board_ratio > 0)
+        else (450.0 / 220.0)
     )
 
-    best_rect: Optional[Tuple[int, int, int, int]] = None
-    best_area = 0.0
+    # 1. Downsample for fast silhouette isolation
+    max_processing_dim = 600
+    scale = max_processing_dim / max(H, W)
+    proc_w, proc_h = int(W * scale), int(H * scale)
+    proc_img = cv2.resize(image, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
 
-    for relax in range(robustness + 1):
-        s_max = 60 + 20 * relax
-        v_pct = max(40, 75 - 10 * relax)
-        v_lo = max(100 - 20 * relax, int(np.percentile(Vv, v_pct)) - 10)
-        mask_hsv = (Ss < s_max) & (Vv > v_lo)
+    # 2. Extract White Card Mass via Dynamic Luminance Thresholding
+    gray = cv2.cvtColor(proc_img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (11, 11), 0)
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        ab_tol = 12 + 6 * relax
-        l_pct = max(35, 60 - 10 * relax)
-        l_lo = max(90 - 15 * relax, int(np.percentile(L2, l_pct)) - 5)
-        mask_lab = (np.abs(A2.astype(np.int16) - 128) < ab_tol) & \
-                   (np.abs(B2.astype(np.int16) - 128) < ab_tol) & \
-                   (L2 > l_lo)
+    kernel_size = max(15, int(min(proc_w, proc_h) * 0.06)) | 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+    mask_closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    mask_closed = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel)
 
-        mask = ((mask_hsv | mask_lab).astype(np.uint8)) * 255
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_small, iterations=2)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k_small, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_bridge, iterations=1)
+    # 3. Shape Analysis & Geometry Validation
+    contours, _ = cv2.findContours(
+        mask_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
 
-        # Use the union of meaningful components, not only the largest contour.
-        # This avoids mid-board cuts when grid lines or glare split the white mask.
-        rect = _foreground_bbox(mask, min_component_area=0.0025 * frame_area)
-        if rect is None:
+    best_quad = None
+    best_score = -1.0
+    scaled_min_area = min_area_frac * (proc_w * proc_h)
+
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < scaled_min_area:
             continue
 
-        x, y, w, h = rect
-        area = float(w * h)
-        if area > best_area:
-            best_rect = rect
-            best_area = area
+        hull = cv2.convexHull(c)
+        peri = cv2.arcLength(hull, True)
+        approx = cv2.approxPolyDP(hull, 0.03 * peri, True)
 
-        if area >= min_area_frac * frame_area:
-            break
+        if len(approx) == 4:
+            pts = approx.reshape(4, 2).astype(np.float32)
+        else:
+            rect_points = cv2.boxPoints(cv2.minAreaRect(hull))
+            pts = rect_points.astype(np.float32)
 
-    if best_rect is None or best_area < min_area_frac * frame_area:
-        return image, (0, 0, W, H)
+        ordered_pts = _order_points_strictly(pts)
+        (tl, tr, br, bl) = ordered_pts
 
-    x, y, w, h = best_rect
+        w_top = np.linalg.norm(tr - tl)
+        w_bot = np.linalg.norm(br - bl)
+        h_left = np.linalg.norm(bl - tl)
+        h_right = np.linalg.norm(br - tr)
 
-    x0 = max(0, x - expand_px)
-    y0 = max(0, y - expand_px)
-    x1 = min(W, x + w + expand_px)
-    y1 = min(H, y + h + expand_px)
+        cand_w = max(w_top, w_bot)
+        cand_h = max(h_left, h_right)
+        if cand_h == 0 or cand_w == 0:
+            continue
 
-    x0 = max(x - max_expand_px, x0)
-    y0 = max(y - max_expand_px, y0)
-    x1 = min(x + w + max_expand_px, x1)
-    y1 = min(y + h + max_expand_px, y1)
+        observed_ratio = cand_w / cand_h
 
-    crop = image[y0:y1, x0:x1].copy()
-    return crop, (x0, y0, x1 - x0, y1 - y0)
+        err_landscape = abs(np.log(observed_ratio / base_ratio))
+        err_portrait = abs(np.log(observed_ratio / (1.0 / base_ratio)))
+        min_err = min(err_landscape, err_portrait)
 
+        ratio_score = np.exp(-min_err * 3.0)
+        size_score = area / (proc_w * proc_h)
+        score = ratio_score * size_score
+
+        if score > best_score and ratio_score > 0.40:
+            best_score = score
+            best_quad = ordered_pts
+
+    # 4. Global Coordinate Projection Un-Warping
+    if best_quad is not None:
+        # Scale corners directly back to full high-resolution image space
+        orig_quad = best_quad / scale
+        (tl, tr, br, bl) = orig_quad
+
+        w_top = np.linalg.norm(tr - tl)
+        w_bot = np.linalg.norm(br - bl)
+        h_left = np.linalg.norm(bl - tl)
+        h_right = np.linalg.norm(br - tr)
+
+        measured_w = max(w_top, w_bot)
+        measured_h = max(h_left, h_right)
+        is_landscape = measured_w >= measured_h
+
+        # Calculate high-res output target bounds dimensions directly
+        if is_landscape:
+            out_w = int(measured_w)
+            out_h = int(round(out_w / base_ratio))
+        else:
+            out_h = int(measured_h)
+            out_w = int(round(out_h / base_ratio))
+
+        out_w = max(100, min(out_w, W))
+        out_h = max(100, min(out_h, H))
+
+        dst_pts = np.array(
+            [[0, 0], [out_w - 1, 0], [out_w - 1, out_h - 1], [0, out_h - 1]],
+            dtype=np.float32,
+        )
+
+        # 5. Direct Matrix Generation (Bypasses intermediate internal crop transforms)
+        H_global = cv2.getPerspectiveTransform(orig_quad, dst_pts)
+
+        # Un-warp the image directly from the full resolution canvas
+        crop = cv2.warpPerspective(
+            image,
+            H_global,
+            (out_w, out_h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+
+        # 6. Generate a Standard Output Bounding Box for Pipeline Backward-Compatibility
+        x_min = max(0, int(np.min(orig_quad[:, 0])))
+        y_min = max(0, int(np.min(orig_quad[:, 1])))
+        x_max = min(W, int(np.max(orig_quad[:, 0])))
+        y_max = min(H, int(np.max(orig_quad[:, 1])))
+
+        max_expand = int(min(H, W) * max_expand_frac)
+        pad = int(np.clip(expand_px, 0, max_expand))
+
+        rect = (
+            max(0, x_min - pad),
+            max(0, y_min - pad),
+            min(W, (x_max - x_min) + 2 * pad),
+            min(H, (y_max - y_min) + 2 * pad),
+        )
+
+        return crop, rect, H_global, (out_h, out_w)
+
+    # 7. Fallback Safety Loop
+    margin_x, margin_y = int(W * 0.02), int(H * 0.02)
+    fallback_crop = image[margin_y : H - margin_y, margin_x : W - margin_x].copy()
+    return (
+        fallback_crop,
+        (margin_x, margin_y, W - (2 * margin_x), H - (2 * margin_y)),
+        np.eye(3),
+        (H, W),
+    )
 
 def correct_perspective(
     image: np.ndarray,                          # BGR image

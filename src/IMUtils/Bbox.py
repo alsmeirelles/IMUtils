@@ -38,7 +38,7 @@ def transform_labels_after_perspective_warp(
         Hmat: np.ndarray,
         in_size: Tuple[int, int],  # (H, W) BEFORE warp
         out_size: Tuple[int, int],  # (H, W) AFTER warp
-        max_elongate: float = 0.0,  # Max relation between widht and height
+        max_elongate: float = 0.0,  # Max relation between width and height
         min_dimension: float = 0.0,
 ) -> List[BBoxYolo]:
     Hi, Wi = in_size

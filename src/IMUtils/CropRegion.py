@@ -176,378 +176,29 @@ def _odd_at_least(value: int, minimum: int = 3) -> int:
     value = max(int(value), minimum)
     return value if value % 2 else value + 1
 
-def _aspect_score(aspect: float, target_ratio: Optional[float]) -> float:
+
+def _order_points_strictly(pts: np.ndarray) -> np.ndarray:
     """
-    Return 0..1 score for how close `aspect` is to `target_ratio`.
-
-    Orientation-agnostic: ratio 1.5 accepts both 1.5 and 1/1.5.
+    Chronologically orders 4 corners into an absolute spatial map:
+    [Top-Left, Top-Right, Bottom-Right, Bottom-Left]
+    Ensures zero point-swapping to eliminate shearing or twisting warps.
     """
-    if target_ratio is None or target_ratio <= 0:
-        return 1.0
+    # Sort points based on X-coordinates (left-to-right)
+    x_sorted = pts[np.argsort(pts[:, 0]), :]
 
-    target = max(float(target_ratio), 1.0 / float(target_ratio))
-    observed = max(float(aspect), 1.0 / max(float(aspect), 1e-6))
-    return float(np.exp(-abs(np.log(observed / target))))
+    # Isolate left pairs and right pairs
+    left_chunk = x_sorted[:2, :]
+    right_chunk = x_sorted[2:, :]
 
-def _runs_from_bool(v: np.ndarray, *, min_len: int = 2) -> list[tuple[int, int]]:
-    """
-    Return inclusive-exclusive runs from a boolean 1D array.
-    """
-    runs = []
-    start = None
+    # Sort left pair by Y-coordinate to isolate Top-Left and Bottom-Left
+    tl = left_chunk[np.argmin(left_chunk[:, 1])]
+    bl = left_chunk[np.argmax(left_chunk[:, 1])]
 
-    for i, value in enumerate(v):
-        if value and start is None:
-            start = i
-        elif not value and start is not None:
-            if i - start >= min_len:
-                runs.append((start, i))
-            start = None
+    # Sort right pair by Y-coordinate to isolate Top-Right and Bottom-Right
+    tr = right_chunk[np.argmin(right_chunk[:, 1])]
+    br = right_chunk[np.argmax(right_chunk[:, 1])]
 
-    if start is not None and len(v) - start >= min_len:
-        runs.append((start, len(v)))
-
-    return runs
-
-def _bbox_from_largest_contour(mask: np.ndarray) -> tuple[Optional[tuple[int, int, int, int]], float]:
-    """
-    Return bbox and contour area of the largest external contour.
-    """
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        return None, 0.0
-
-    c = max(cnts, key=cv2.contourArea)
-    area = float(cv2.contourArea(c))
-    return cv2.boundingRect(c), area
-
-def _bbox_from_projection_support(
-    mask: np.ndarray,
-    *,
-    min_col_ratio: float = 0.08,
-    min_row_ratio: float = 0.08,
-    smooth_frac: float = 0.025,
-) -> Optional[tuple[int, int, int, int]]:
-    """
-    Estimate bbox from row/column projection support instead of connected contours.
-
-    This is useful when glare or printed grid lines split the board into pieces.
-    It uses all foreground evidence along each axis, so missing internal columns
-    or rows do not necessarily cut the crop.
-    """
-    H, W = mask.shape[:2]
-    fg = mask > 0
-
-    col_ratio = fg.mean(axis=0).astype(np.float32)
-    row_ratio = fg.mean(axis=1).astype(np.float32)
-
-    kx = max(3, int(W * smooth_frac))
-    ky = max(3, int(H * smooth_frac))
-    if kx % 2 == 0:
-        kx += 1
-    if ky % 2 == 0:
-        ky += 1
-
-    col_ratio = cv2.blur(col_ratio.reshape(1, -1), (1, kx)).ravel()
-    row_ratio = cv2.blur(row_ratio.reshape(-1, 1), (ky, 1)).ravel()
-
-    cols = np.where(col_ratio >= min_col_ratio)[0]
-    rows = np.where(row_ratio >= min_row_ratio)[0]
-
-    if cols.size == 0 or rows.size == 0:
-        return None
-
-    x0, x1 = int(cols[0]), int(cols[-1]) + 1
-    y0, y1 = int(rows[0]), int(rows[-1]) + 1
-
-    if x1 <= x0 or y1 <= y0:
-        return None
-
-    return x0, y0, x1 - x0, y1 - y0
-
-
-def _bbox_from_grid_lines(
-    image_bgr: np.ndarray,
-    white_mask: np.ndarray,
-    *,
-    board_ratio: Optional[float] = None,
-    min_lines_x: int = 4,
-    min_lines_y: int = 3,
-) -> Optional[tuple[int, int, int, int]]:
-    """
-    Estimate board bbox from dark grid/outer-border lines.
-
-    This is a rescue fallback for cases where glare breaks the white-board mask.
-    It uses black line evidence gated by the detected white board area.
-    """
-    H, W = image_bgr.shape[:2]
-
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-
-    # Use the white mask only as a coarse board-region gate.
-    gate_kernel = cv2.getStructuringElement(
-        cv2.MORPH_RECT,
-        (_odd_at_least(W * 0.025, 9), _odd_at_least(H * 0.025, 9)),
-    )
-    gate = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, gate_kernel, iterations=2)
-    gate = cv2.dilate(gate, gate_kernel, iterations=1) > 0
-
-    # Dark pixels on a locally bright background: grid lines, not granite texture.
-    local = cv2.blur(gray, (31, 31))
-    dark = ((gray < 95) | (gray < (local - 35))) & gate
-    dark = dark.astype(np.uint8) * 255
-
-    # Extract long horizontal and vertical line evidence.
-    kh = cv2.getStructuringElement(
-        cv2.MORPH_RECT,
-        (_odd_at_least(W * 0.035, 21), 3),
-    )
-    kv = cv2.getStructuringElement(
-        cv2.MORPH_RECT,
-        (3, _odd_at_least(H * 0.035, 21)),
-    )
-
-    h_lines = cv2.morphologyEx(dark, cv2.MORPH_OPEN, kh, iterations=1)
-    v_lines = cv2.morphologyEx(dark, cv2.MORPH_OPEN, kv, iterations=1)
-
-    # Slightly reconnect interrupted printed lines.
-    h_lines = cv2.morphologyEx(h_lines, cv2.MORPH_CLOSE, kh, iterations=1)
-    v_lines = cv2.morphologyEx(v_lines, cv2.MORPH_CLOSE, kv, iterations=1)
-
-    x_score = (v_lines > 0).mean(axis=0).astype(np.float32)
-    y_score = (h_lines > 0).mean(axis=1).astype(np.float32)
-
-    x_score = cv2.blur(x_score.reshape(1, -1), (1, _odd_at_least(W * 0.006, 5))).ravel()
-    y_score = cv2.blur(y_score.reshape(-1, 1), (_odd_at_least(H * 0.006, 5), 1)).ravel()
-
-    if x_score.max() <= 0 or y_score.max() <= 0:
-        return None
-
-    xs = x_score >= max(0.015, 0.25 * float(x_score.max()))
-    ys = y_score >= max(0.015, 0.25 * float(y_score.max()))
-
-    x_runs = _runs_from_bool(xs, min_len=max(2, int(W * 0.0015)))
-    y_runs = _runs_from_bool(ys, min_len=max(2, int(H * 0.0015)))
-
-    if len(x_runs) < min_lines_x or len(y_runs) < min_lines_y:
-        return None
-
-    x_centers = np.array([(a + b) // 2 for a, b in x_runs], dtype=np.int32)
-    y_centers = np.array([(a + b) // 2 for a, b in y_runs], dtype=np.int32)
-
-    x0 = int(x_centers.min())
-    x1 = int(x_centers.max())
-    y0 = int(y_centers.min())
-    y1 = int(y_centers.max())
-
-    if x1 <= x0 or y1 <= y0:
-        return None
-
-    # Add grid-derived margin so the crop contains the white border around the grid.
-    if len(x_centers) >= 2:
-        dx = float(np.median(np.diff(np.sort(x_centers))))
-    else:
-        dx = W * 0.05
-
-    if len(y_centers) >= 2:
-        dy = float(np.median(np.diff(np.sort(y_centers))))
-    else:
-        dy = H * 0.05
-
-    pad_x = int(max(8, 0.20 * dx))
-    pad_y = int(max(8, 0.25 * dy))
-
-    x0 = max(0, x0 - pad_x)
-    x1 = min(W, x1 + pad_x)
-    y0 = max(0, y0 - pad_y)
-    y1 = min(H, y1 + pad_y)
-
-    rect = (x0, y0, x1 - x0, y1 - y0)
-
-    # Final ratio repair helps when one outer grid line was weak/missed.
-    return _repair_rect_to_ratio(
-        rect,
-        image_shape=image_bgr.shape,
-        board_ratio=board_ratio,
-        min_expand_frac=0.08,
-    )
-
-def _has_board_border_support(
-    image_bgr: np.ndarray,
-    rect: tuple[int, int, int, int],
-    *,
-    min_x_side_support: float = 0.08,
-    min_y_side_support: float = 0.12,
-    band_x_frac: float = 0.04,
-    band_y_frac: float = 0.08,
-) -> bool:
-    """
-    Check dark grid/border evidence near candidate sides.
-    Stricter on top/bottom to catch missing rows.
-    """
-    x, y, w, h = rect
-    roi = image_bgr[y:y + h, x:x + w]
-    if roi.size == 0:
-        return False
-
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-
-    local = cv2.blur(gray, (31, 31))
-    dark = (gray < 100) | (gray < (local - 35))
-
-    band_x = max(3, int(w * band_x_frac))
-    band_y = max(5, int(h * band_y_frac))
-
-    left = float(dark[:, :band_x].mean())
-    right = float(dark[:, -band_x:].mean())
-    top = float(dark[:band_y, :].mean())
-    bottom = float(dark[-band_y:, :].mean())
-
-    return (
-        left >= min_x_side_support
-        and right >= min_x_side_support
-        and top >= min_y_side_support
-        and bottom >= min_y_side_support
-    )
-
-def _board_candidate_is_valid(
-    image_bgr: np.ndarray,
-    mask: np.ndarray,
-    rect: tuple[int, int, int, int],
-    *,
-    contour_area: float,
-    frame_area: float,
-    min_area_frac: float,
-    board_ratio: Optional[float],
-    min_ratio_score: float = 0.68,
-    min_mask_fill: float = 0.28,
-) -> bool:
-    """
-    Decide whether a detected rectangle is likely a complete board.
-
-    This rejects glare-split crops that are too small, too skinny/wide, or have
-    too little white-mask support inside the candidate rectangle.
-    """
-    x, y, w, h = rect
-
-    if w <= 0 or h <= 0:
-        return False
-
-    bbox_area = float(w * h)
-    area_frac = bbox_area / frame_area
-
-    aspect = w / max(h, 1)
-    ratio_score = _aspect_score(aspect, board_ratio)
-
-    # Allow smaller boards if geometry strongly matches the expected board.
-    adaptive_min_area = min_area_frac * (1.0 - 0.45 * ratio_score)
-
-    if area_frac < adaptive_min_area:
-        return False
-
-    if contour_area < 0.18 * min_area_frac * frame_area:
-        return False
-
-    if ratio_score < min_ratio_score:
-        return False
-
-    roi = mask[y:y + h, x:x + w] > 0
-    if roi.size == 0:
-        return False
-
-    fill = float(roi.mean())
-    if fill < min_mask_fill:
-        return False
-
-    if not _has_board_border_support(
-        image_bgr,
-        rect,
-        min_x_side_support=0.1,
-        min_y_side_support=0.15,
-        band_x_frac=0.06,
-        band_y_frac=0.08,):
-
-        return False
-
-    return True
-
-
-def _expand_rect(
-    rect: tuple[int, int, int, int],
-    *,
-    image_shape: tuple[int, int],
-    expand_px: int,
-    max_expand_px: int,
-) -> tuple[int, int, int, int]:
-    """
-    Expand bbox with image-bound clamping.
-    """
-    H, W = image_shape[:2]
-    x, y, w, h = rect
-
-    expand_px = int(np.clip(expand_px, 0, max_expand_px))
-
-    x0 = max(0, x - expand_px)
-    y0 = max(0, y - expand_px)
-    x1 = min(W, x + w + expand_px)
-    y1 = min(H, y + h + expand_px)
-
-    x0 = max(x - max_expand_px, x0)
-    y0 = max(y - max_expand_px, y0)
-    x1 = min(x + w + max_expand_px, x1)
-    y1 = min(y + h + max_expand_px, y1)
-
-    return x0, y0, x1 - x0, y1 - y0
-
-def _repair_rect_to_ratio(
-    rect: tuple[int, int, int, int],
-    *,
-    image_shape: tuple[int, int],
-    board_ratio: Optional[float],
-    min_expand_frac: float = 0.08,
-) -> tuple[int, int, int, int]:
-    """
-    Expand a partial board bbox toward the expected board aspect ratio.
-
-    Useful when glare removes full rows/columns and the mask-based bbox is
-    systematically too narrow or too short.
-    """
-    if board_ratio is None or board_ratio <= 0:
-        return rect
-
-    H, W = image_shape[:2]
-    x, y, w, h = rect
-
-    target = max(float(board_ratio), 1.0 / float(board_ratio))
-    observed = w / max(h, 1)
-
-    # Make comparison orientation-agnostic.
-    landscape_like = observed >= 1.0
-    target_ar = target if landscape_like else 1.0 / target
-
-    new_x, new_y, new_w, new_h = x, y, w, h
-
-    if observed < target_ar:
-        # Too narrow: likely lost columns.
-        desired_w = int(round(h * target_ar))
-        delta = max(desired_w - w, int(w * min_expand_frac))
-        new_x = x - delta // 2
-        new_w = w + delta
-    else:
-        # Too short: likely lost rows.
-        desired_h = int(round(w / target_ar))
-        delta = max(desired_h - h, int(h * min_expand_frac))
-        new_y = y - delta // 2
-        new_h = h + delta
-
-    x0 = max(0, new_x)
-    y0 = max(0, new_y)
-    x1 = min(W, new_x + new_w)
-    y1 = min(H, new_y + new_h)
-
-    return x0, y0, x1 - x0, y1 - y0
+    return np.array([tl, tr, br, bl], dtype=np.float32)
 
 
 # ---------------------- Public functions ----------------------------------------------------
@@ -559,198 +210,162 @@ def crop_white_board(
     expand_px: int = 10,
     max_expand_frac: float = 0.08,
     min_area_frac: float = 0.10,
-    robustness: int = 2,
     image_name: str = "unknown",
-) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+) -> tuple[np.ndarray, tuple[int, int, int, int], np.ndarray, tuple[int, int]]:
     """
-    Crop a white rectangular board from a BGR image.
-
-    Strategy:
-      1. Try the original tight largest-contour crop first.
-      2. Validate it using area, expected board aspect ratio, and mask support.
-      3. If it looks split/cut, use a stronger fallback mask that bridges glare
-         seams and grid/column splits.
-      4. Return the best valid rectangle cropped from the original image.
-
-    Args:
-        image: BGR input image.
-        board_ratio: Expected board width / height ratio. Orientation-agnostic.
-        expand_px: Desired padding around detected board.
-        max_expand_frac: Maximum expansion as fraction of min(H, W).
-        min_area_frac: Minimum accepted board bbox area as fraction of frame.
-        robustness: Number of relaxed threshold passes.
+    Unified global perspective board cropper.
+    Computes a clean global homography matrix from full-frame to target crop coordinates,
+    ensuring labels maintain their correct square shape without horizontal elongation.
 
     Returns:
-        (crop, (x, y, w, h)).
+        (warped_crop, (x, y, w, h), global_homography_matrix, (out_h, out_w))
     """
     H, W = image.shape[:2]
-    frame_area = float(W * H)
 
-    max_expand_px = int(min(H, W) * max_expand_frac)
-    expand_px = int(np.clip(expand_px, 0, max_expand_px))
-
-    # --- 1) Local contrast normalization, preserving your original behavior.
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
-
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    Lc = clahe.apply(L)
-
-    img_eq = cv2.cvtColor(cv2.merge([Lc, A, B]), cv2.COLOR_LAB2BGR)
-
-    # Color thresholding: bright board becomes foreground.
-    gray = cv2.cvtColor(img_eq, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (7, 7), 0)
-
-    # Adaptive threshold: bright board becomes foreground.
-    mask_adapt = cv2.adaptiveThreshold(
-        gray,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        _odd_at_least(min(H, W) * 0.08, 51),
-        -10,
+    # Target physical aspect ratio baseline (450x220mm)
+    base_ratio = (
+        float(board_ratio)
+        if (board_ratio is not None and board_ratio > 0)
+        else (450.0 / 220.0)
     )
 
-    hsv = cv2.cvtColor(img_eq, cv2.COLOR_BGR2HSV)
-    _, Ss, Vv = cv2.split(hsv)
+    # 1. Downsample for fast silhouette isolation
+    max_processing_dim = 600
+    scale = max_processing_dim / max(H, W)
+    proc_w, proc_h = int(W * scale), int(H * scale)
+    proc_img = cv2.resize(image, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
 
-    lab2 = cv2.cvtColor(img_eq, cv2.COLOR_BGR2LAB)
-    L2, A2, B2 = cv2.split(lab2)
+    # 2. Extract White Card Mass via Dynamic Luminance Thresholding
+    gray = cv2.cvtColor(proc_img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (11, 11), 0)
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Tight path kernels: close to your rollback version.
-    k7 = np.ones((7, 7), np.uint8)
-    k11 = np.ones((11, 11), np.uint8)
+    kernel_size = max(15, int(min(proc_w, proc_h) * 0.06)) | 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+    mask_closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    mask_closed = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel)
 
-    # Fallback kernels: stronger bridge only when tight detection fails.
-    k_bridge = cv2.getStructuringElement(
-        cv2.MORPH_RECT,
-        (_odd_at_least(W * 0.040, 17), _odd_at_least(H * 0.040, 17)),
+    # 3. Shape Analysis & Geometry Validation
+    contours, _ = cv2.findContours(
+        mask_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
-    best_fallback_rect: Optional[tuple[int, int, int, int]] = None
-    best_fallback_score = 0.0
+    best_quad = None
+    best_score = -1.0
+    scaled_min_area = min_area_frac * (proc_w * proc_h)
 
-    for relax in range(robustness + 1):
-        # --- 2) Build the same adaptive white mask logic as tight version.
-        s_max = 60 + 20 * relax
-        v_base_pct = max(40, 75 - 10 * relax)
-        v_lo = int(np.percentile(Vv, v_base_pct))
-        v_lo = max(100 - 20 * relax, v_lo - 10)
-
-        mask_hsv = (Ss < s_max) & (Vv > v_lo)
-
-        ab_tol = 12 + 6 * relax
-        l_pct = max(35, 60 - 10 * relax)
-        l_lo = int(np.percentile(L2, l_pct))
-        l_lo = max(90 - 15 * relax, l_lo - 5)
-
-        mask_lab = (
-            (np.abs(A2.astype(np.int16) - 128) < ab_tol)
-            & (np.abs(B2.astype(np.int16) - 128) < ab_tol)
-            & (L2 > l_lo)
-        )
-
-        mask_white = mask_hsv | mask_lab
-        mask_raw = ((mask_white & (mask_adapt > 0)).astype(np.uint8)) * 255
-
-        # --- 3) Tight candidate: original-style morphology and largest contour.
-        tight_mask = cv2.morphologyEx(mask_raw, cv2.MORPH_CLOSE, k7, iterations=2)
-        tight_mask = cv2.morphologyEx(tight_mask, cv2.MORPH_OPEN, k7, iterations=1)
-        tight_mask = cv2.dilate(tight_mask, k11, iterations=1)
-
-        tight_rect, tight_area = _bbox_from_largest_contour(tight_mask)
-
-        if tight_rect is not None and _board_candidate_is_valid(
-            img_eq,
-            tight_mask,
-            tight_rect,
-            contour_area=tight_area,
-            frame_area=frame_area,
-            min_area_frac=min_area_frac,
-            board_ratio=board_ratio,
-            min_ratio_score=0.75,
-            min_mask_fill=0.35,
-        ):
-            rect = _expand_rect(
-                tight_rect,
-                image_shape=image.shape,
-                expand_px=expand_px,
-                max_expand_px=max_expand_px,
-            )
-            x, y, w, h = rect
-            print(f"Done tight crop for {image_name}")
-
-            return image[y : y + h, x : x + w].copy(), rect
-
-        print(f"Tight crop failed ({image_name}), relax {relax} of {robustness}")
-
-        # --- 4) Robust fallback candidate: bridge only if tight crop was invalid.
-        fallback_mask = cv2.morphologyEx(mask_raw, cv2.MORPH_CLOSE, k7, iterations=2)
-        fallback_mask = cv2.morphologyEx(fallback_mask, cv2.MORPH_OPEN, k7, iterations=1)
-        fallback_mask = cv2.morphologyEx(fallback_mask, cv2.MORPH_CLOSE, k_bridge, iterations=1)
-
-        fallback_rect = _bbox_from_grid_lines(
-            img_eq,
-            fallback_mask,
-            board_ratio=board_ratio,
-        )
-
-        if fallback_rect is None:
-            print(f"Fallback from grid lines failed ({image_name}), relax {relax} of {robustness}. Trying projection support.")
-            fallback_rect = _bbox_from_projection_support(
-                fallback_mask,
-                min_col_ratio=0.04,
-                min_row_ratio=0.04,
-                smooth_frac=0.035,
-            )
-
-        if fallback_rect is None:
-            print(f"Fallback from projection ({image_name}) support failed, relax {relax} of {robustness}.")
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < scaled_min_area:
             continue
 
-        candidate_rect = _repair_rect_to_ratio(
-            fallback_rect,
-            image_shape=image.shape,
-            board_ratio=board_ratio,
-            min_expand_frac=0.10,
+        hull = cv2.convexHull(c)
+        peri = cv2.arcLength(hull, True)
+        approx = cv2.approxPolyDP(hull, 0.03 * peri, True)
+
+        if len(approx) == 4:
+            pts = approx.reshape(4, 2).astype(np.float32)
+        else:
+            rect_points = cv2.boxPoints(cv2.minAreaRect(hull))
+            pts = rect_points.astype(np.float32)
+
+        ordered_pts = _order_points_strictly(pts)
+        (tl, tr, br, bl) = ordered_pts
+
+        w_top = np.linalg.norm(tr - tl)
+        w_bot = np.linalg.norm(br - bl)
+        h_left = np.linalg.norm(bl - tl)
+        h_right = np.linalg.norm(br - tr)
+
+        cand_w = max(w_top, w_bot)
+        cand_h = max(h_left, h_right)
+        if cand_h == 0 or cand_w == 0:
+            continue
+
+        observed_ratio = cand_w / cand_h
+
+        err_landscape = abs(np.log(observed_ratio / base_ratio))
+        err_portrait = abs(np.log(observed_ratio / (1.0 / base_ratio)))
+        min_err = min(err_landscape, err_portrait)
+
+        ratio_score = np.exp(-min_err * 3.0)
+        size_score = area / (proc_w * proc_h)
+        score = ratio_score * size_score
+
+        if score > best_score and ratio_score > 0.40:
+            best_score = score
+            best_quad = ordered_pts
+
+    # 4. Global Coordinate Projection Un-Warping
+    if best_quad is not None:
+        # Scale corners directly back to full high-resolution image space
+        orig_quad = best_quad / scale
+        (tl, tr, br, bl) = orig_quad
+
+        w_top = np.linalg.norm(tr - tl)
+        w_bot = np.linalg.norm(br - bl)
+        h_left = np.linalg.norm(bl - tl)
+        h_right = np.linalg.norm(br - tr)
+
+        measured_w = max(w_top, w_bot)
+        measured_h = max(h_left, h_right)
+        is_landscape = measured_w >= measured_h
+
+        # Calculate high-res output target bounds dimensions directly
+        if is_landscape:
+            out_w = int(measured_w)
+            out_h = int(round(out_w / base_ratio))
+        else:
+            out_h = int(measured_h)
+            out_w = int(round(out_h / base_ratio))
+
+        out_w = max(100, min(out_w, W))
+        out_h = max(100, min(out_h, H))
+
+        dst_pts = np.array(
+            [[0, 0], [out_w - 1, 0], [out_w - 1, out_h - 1], [0, out_h - 1]],
+            dtype=np.float32,
         )
 
-        x, y, w, h = candidate_rect
-        bbox_area = float(w * h)
-        aspect = w / max(h, 1)
-        ratio_score = _aspect_score(aspect, board_ratio)
+        # 5. Direct Matrix Generation (Bypasses intermediate internal crop transforms)
+        H_global = cv2.getPerspectiveTransform(orig_quad, dst_pts)
 
-        score = bbox_area * (ratio_score**2)
+        # Un-warp the image directly from the full resolution canvas
+        crop = cv2.warpPerspective(
+            image,
+            H_global,
+            (out_w, out_h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
 
-        if (
-            bbox_area >= min_area_frac * frame_area
-            and ratio_score >= 0.80
-            and score > best_fallback_score
-        ):
-            best_fallback_score = score
-            best_fallback_rect = candidate_rect
+        # 6. Generate a Standard Output Bounding Box for Pipeline Backward-Compatibility
+        x_min = max(0, int(np.min(orig_quad[:, 0])))
+        y_min = max(0, int(np.min(orig_quad[:, 1])))
+        x_max = min(W, int(np.max(orig_quad[:, 0])))
+        y_max = min(H, int(np.max(orig_quad[:, 1])))
 
-    if best_fallback_rect is None:
-        return image, (0, 0, W, H)
+        max_expand = int(min(H, W) * max_expand_frac)
+        pad = int(np.clip(expand_px, 0, max_expand))
 
-    best_fallback_rect = _repair_rect_to_ratio(
-        best_fallback_rect,
-        image_shape=image.shape,
-        board_ratio=board_ratio,
-        min_expand_frac=0.10,
+        rect = (
+            max(0, x_min - pad),
+            max(0, y_min - pad),
+            min(W, (x_max - x_min) + 2 * pad),
+            min(H, (y_max - y_min) + 2 * pad),
+        )
+
+        return crop, rect, H_global, (out_h, out_w)
+
+    # 7. Fallback Safety Loop
+    margin_x, margin_y = int(W * 0.02), int(H * 0.02)
+    fallback_crop = image[margin_y : H - margin_y, margin_x : W - margin_x].copy()
+    return (
+        fallback_crop,
+        (margin_x, margin_y, W - (2 * margin_x), H - (2 * margin_y)),
+        np.eye(3),
+        (H, W),
     )
-
-    rect = _expand_rect(
-        best_fallback_rect,
-        image_shape=image.shape,
-        expand_px=expand_px,
-        max_expand_px=max_expand_px,
-    )
-
-    x, y, w, h = rect
-    return image[y:y + h, x:x + w].copy(), rect
-
 
 def correct_perspective(
     image: np.ndarray,                          # BGR image

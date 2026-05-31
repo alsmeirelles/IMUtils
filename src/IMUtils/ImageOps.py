@@ -19,6 +19,24 @@ from .Types import LetterboxParams
 
 
 def compute_letterbox_params(orig_hw: tuple[int, int], target_wh: tuple[int, int]) -> LetterboxParams:
+    """
+    Compute the scale and symmetric padding needed to letterbox an image.
+
+    The function scales the original image so it fits inside ``target_wh`` while
+    preserving aspect ratio, then calculates the left/top/right/bottom padding
+    needed to reach the requested output size.
+
+    Args:
+        orig_hw: Original image size as ``(height, width)``.
+        target_wh: Target canvas size as ``(width, height)``.
+
+    Returns:
+        LetterboxParams: Frozen dataclass containing:
+            ``ratio``: Scale factor applied to the original dimensions.
+            ``new_size``: Resized image size as ``(new_width, new_height)``
+            before padding.
+            ``pad``: Padding as ``(left, top, right, bottom)``.
+    """
     H0, W0 = orig_hw
     Wt, Ht = target_wh
     ratio = float(max(Wt, Ht)) / float(max(W0, H0))
@@ -34,15 +52,33 @@ def compute_letterbox_params(orig_hw: tuple[int, int], target_wh: tuple[int, int
 
 def image_resize(image, width=None, height=None, rotate=False, inter=Image.Resampling.BICUBIC):
     """
-    Resize keeping aspect ratio. Should keep in mind that if the image is rotated, requested
-    dimensions will be inverted.
-    
-    @param image: PIL Image or NDARRAY
-    @param width: Resize to this width, adjust height accordingly
-    @param height: Resize to the height, adjust width accordingly
-    @param rotate: Rotates before resizing to match to the defined axis (horizontal or vertical)
-    @param inter: Interpolation mode, given by OpenCV
-    @return: Resized image as NDARRAY
+    Resize an image while preserving its aspect ratio.
+
+    NumPy inputs are converted to PIL images before resizing. If both ``width``
+    and ``height`` are provided, only ``width`` is used to compute the output
+    size. If neither dimension is provided, the original image object is
+    returned unchanged. When ``rotate`` is true and the source is not square,
+    the resized image is passed to :func:`image_rotate`; because
+    ``image_rotate`` returns rotation metadata, this branch returns that tuple
+    instead of only the resized image.
+
+    Args:
+        image: PIL ``Image.Image`` or NumPy array representing the image to
+            resize. NumPy arrays are interpreted as RGB channel order by
+            ``Image.fromarray``.
+        width: Desired output width in pixels. If ``None`` or ``0``, ``height``
+            is used and width is computed from the source aspect ratio.
+        height: Desired output height in pixels. Used only when ``width`` is
+            ``None`` or ``0``.
+        rotate: If true, rotate the resized image toward a vertical orientation
+            when resizing by height, or toward a horizontal orientation when
+            resizing by width.
+        inter: PIL resampling filter passed to ``Image.resize``.
+
+    Returns:
+        Image.Image | tuple: A resized PIL image when no rotation is applied;
+        the original image object when no target dimension is provided; or the
+        tuple returned by :func:`image_rotate` when ``rotate`` is true.
     """
 
     if isinstance(image, np.ndarray):
@@ -88,14 +124,25 @@ def resize_with_pad(image: np.ndarray,
                     new_shape: Tuple[int, int],
                     padding_color: Tuple[int, int, int] = (255, 255, 255),
                     return_params: bool = False) -> np.ndarray | Tuple[np.ndarray, LetterboxParams]:
-    """Maintains aspect ratio and resizes with padding.
-    Params:
-        image: Image to be resized.
-        new_shape: Expected (width, height) of new image.
-        padding_color: Tuple in BGR of padding color
+    """
+    Resize an image to fit inside a target canvas and pad the remaining area.
+
+    The image is resized with OpenCV while preserving aspect ratio. Constant
+    padding is then added on each side so the final array exactly matches
+    ``new_shape``.
+
+    Args:
+        image: NumPy image array in OpenCV-compatible layout. ``image.shape`` is
+            expected to start with ``(height, width)``.
+        new_shape: Target output size as ``(width, height)``.
+        padding_color: Border color passed to OpenCV as a BGR tuple.
+        return_params: When true, return the computed
+            :class:`LetterboxParams` together with the padded image.
+
     Returns:
-        image: Resized image with padding
-        params: Resized parameters (optional)
+        np.ndarray | tuple[np.ndarray, LetterboxParams]: The resized and padded
+        image. If ``return_params`` is true, returns ``(image, params)``, where
+        ``params`` describes the scale and padding used.
     """
 
     params = compute_letterbox_params(image.shape[:2], new_shape)
@@ -111,14 +158,35 @@ def resize_with_pad(image: np.ndarray,
 
 def image_rotate(im, orientation=None, rnumpy=False, conditional=False):
     """
-    Rotate image 90 degrees, depending on its shape. If the longest dim is width, make height the longest
-    and vice versa
-    @param im: Pillow Image, NDARRAY (BGR) or string path
-    @param orientation | STR: h for horizontal or v for vertical
-    @param rnumpy: Boolean, return NDARRAY
-    @param conditional: Boolean, only rotate if orientation is different from current dimensions. IE: if width is the
-    largest dimension and orientation is h, do nothing
-    @return: same as im or rotated image, apply_rotation (tells if rotation was applied)
+    Rotate an image 90 degrees toward a requested orientation.
+
+    ``orientation='v'`` rotates counter-clockwise when rotation is applied, and
+    ``orientation='h'`` rotates clockwise. If ``conditional`` is true, rotation
+    only occurs when the current image dimensions do not already match the
+    requested orientation. If ``orientation`` is ``None``, the original input is
+    returned immediately without metadata.
+
+    Args:
+        im: Image to rotate. The current implementation accepts a NumPy array in
+            BGR order or a string path. NumPy arrays are converted from BGR to
+            RGB before PIL rotation. String paths are loaded with
+            :func:`read_image`.
+        orientation: Target orientation. Use ``'h'`` for horizontal/landscape,
+            ``'v'`` for vertical/portrait, or ``None`` to skip rotation.
+        rnumpy: When true, return the rotated image as a BGR NumPy array.
+            Otherwise, return a PIL image.
+        conditional: When true, skip rotation if the image already has the
+            requested orientation.
+
+    Returns:
+        Any | tuple[Image.Image | np.ndarray, bool, str | None]: If
+        ``orientation`` is ``None``, returns ``im`` unchanged. Otherwise returns
+        ``(image, apply_rotation, direction)``, where ``image`` is the rotated
+        or original image, ``apply_rotation`` indicates whether a rotation was
+        performed, and ``direction`` is ``'ccw'``, ``'cw'``, or ``None``.
+
+    Raises:
+        TypeError: If ``im`` is not a NumPy array or string path.
     """
 
     if orientation is None:
@@ -151,13 +219,28 @@ def image_rotate(im, orientation=None, rnumpy=False, conditional=False):
 
 def visualize(image, bboxes, category_ids=None, category_id_to_name: dict = None, draw_categories=False):
     """
-    Visualize bounding boxes on the image.
+    Draw bounding boxes on an image and display the result with Matplotlib.
 
-    @param image: PIL Image or NDARRAY
-    @param bboxes: Bounding boxes as NDARRAY or list
-    @param category_ids: Class IDs
-    @param category_id_to_name: Dictionary, mapping from class ID to name
-    @param draw_categories: Boolean, draw categories text along bboxes
+    Each bounding box is converted with :func:`bbox_convert`, drawn with
+    :func:`draw_bbox`, then shown in a Matplotlib figure. Colors are selected
+    from a Matplotlib colormap using the category id.
+
+    Args:
+        image: NumPy image array to annotate. The implementation uses
+            ``image.copy()`` and ``image.shape``.
+        bboxes: Iterable of bounding boxes accepted by
+            :func:`bbox_convert`.
+        category_ids: Iterable of category ids aligned with ``bboxes``. Each id
+            is used to look up the class name and select a display color.
+        category_id_to_name: Mapping from category id to display name.
+        draw_categories: Whether to draw category text beside each bounding
+            box.
+
+    Returns:
+        np.ndarray: Copy of ``image`` with bounding boxes drawn on it.
+
+    Raises:
+        RuntimeError: If Matplotlib cannot be imported.
     """
     try:
         # import matplotlib
@@ -171,12 +254,15 @@ def visualize(image, bboxes, category_ids=None, category_id_to_name: dict = None
 
     def get_color_from_matplotlib(index: int, total_colors=10, colormap="tab10"):
         """
-        Generates an RGB color from a Matplotlib colormap.
+        Generate an RGB color from a Matplotlib colormap.
 
-        :param index: Integer index.
-        :param total_colors: Total expected unique colors.
-        :param colormap: Matplotlib colormap.
-        :return: Tuple (R, G, B) with values in range (0-255).
+        Args:
+            index: Category index used to choose a color.
+            total_colors: Number of expected unique colors in the color range.
+            colormap: Name of the Matplotlib colormap to sample.
+
+        Returns:
+            tuple[int, int, int]: RGB color with channel values from 0 to 255.
         """
         cmap = plt.get_cmap(colormap)  # Load specified colormap
         normalized_index = index / max(1, total_colors - 1)  # Normalize index within colormap range
@@ -196,8 +282,39 @@ def visualize(image, bboxes, category_ids=None, category_id_to_name: dict = None
 
     return img
 
+def normalize_illumination_gray(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Normalize illumination in a grayscale image by dividing by a median-blurred background estimate.
+    """
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+
+    h, w = gray.shape
+    min_dim = min(h, w)
+
+    # Large median blur estimates slow background illumination:
+    # glare, shadows, exposure gradient.
+    bg_ksize = max(31, int(min_dim * 0.06))
+    bg_ksize = bg_ksize if bg_ksize % 2 == 1 else bg_ksize + 1 # use the first odd number
+    background = cv2.medianBlur(gray, bg_ksize)
+
+    normalized = cv2.divide(gray, background, scale=255)
+    return normalized
 
 def write_image(img, path: str):
+    """
+    Save an image to disk.
+
+    NumPy inputs are assumed to be in BGR channel order and are converted to RGB
+    before being saved through PIL. PIL ``Image.Image`` inputs are saved
+    directly. Other input types are ignored by the current implementation.
+
+    Args:
+        img: Image to save, either a NumPy array in BGR order or a PIL image.
+        path: Destination file path passed to ``Image.save``.
+
+    Returns:
+        None
+    """
     if isinstance(img, np.ndarray):
         Image.fromarray(img[:, :, ::-1]).save(path)  # BGR -> RGB before saving PIL
     elif isinstance(img, Image.Image):
@@ -206,9 +323,22 @@ def write_image(img, path: str):
 
 def read_image(path: str | Path, rnumpy=False):
     """
-    Read an image from path
-    @param path: Path to image
-    @param rnumpy: Boolean, return NDARRAY (BGR)
+    Read an image from disk and apply EXIF orientation correction.
+
+    The image is opened with PIL and normalized with
+    ``ImageOps.exif_transpose`` so EXIF orientation is reflected in the returned
+    pixels. When NumPy output is requested, HEIF/HEIC images are converted to
+    RGB first if HEIF support is available, then channel order is converted from
+    RGB to BGR.
+
+    Args:
+        path: Path to the image file.
+        rnumpy: When true, return a BGR NumPy array. When false, return a PIL
+            image.
+
+    Returns:
+        Image.Image | np.ndarray: EXIF-corrected PIL image, or BGR NumPy array
+        if ``rnumpy`` is true.
     """
     path = Path(path)
 

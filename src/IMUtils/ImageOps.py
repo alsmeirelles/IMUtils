@@ -300,6 +300,40 @@ def normalize_illumination_gray(img_bgr: np.ndarray) -> np.ndarray:
     normalized = cv2.divide(gray, background, scale=255)
     return normalized
 
+def normalize_illumination(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Normalizes the illumination of a BGR image by adjusting its luminance channel.
+
+    This function processes a BGR image to normalize its illumination, which can help reduce
+    uneven lighting effects. The function separates the luminance channel from the image, adjusts
+    it using a smoothed background estimation, and reassembles the normalized image in the
+    original color format.
+
+    Parameters:
+    img_bgr: np.ndarray
+        A BGR image with shape (height, width, 3) to be processed.
+
+    Returns:
+    np.ndarray
+        The resulting BGR image after illumination normalization.
+    """
+    h, w = img_bgr.shape[:2]
+    min_dim = min(h, w)
+
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+
+
+    bg_ksize = max(31, int(min_dim * 0.06))
+    bg_ksize = bg_ksize if bg_ksize % 2 == 1 else bg_ksize + 1
+    background = cv2.medianBlur(l, bg_ksize)
+    l_norm = cv2.divide(l, background, scale=255)
+
+    lab_norm = cv2.merge([l_norm, a, b])
+    img_norm_bgr = cv2.cvtColor(lab_norm, cv2.COLOR_LAB2BGR)
+
+    return img_norm_bgr
+
 def write_image(img, path: str):
     """
     Save an image to disk.

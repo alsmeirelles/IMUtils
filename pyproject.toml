@@ -1,6 +1,6 @@
 [project]
 name = "IMUtils"
-version = "1.1.1"
+version = "1.1.2"
 description = "Image and video processing utilities."
 readme = "README.md"
 requires-python = ">=3.10,<4.0"
@@ -19,7 +19,6 @@ dependencies = [
 [project.optional-dependencies]
 vis = [
     "matplotlib",
-#    "PyGObject; sys_platform == 'linux'",
 ]
 
 dev = [

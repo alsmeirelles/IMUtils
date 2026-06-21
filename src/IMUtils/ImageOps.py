@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import os.path
+
+import PIL
 import numpy as np
 import cv2
 from PIL import Image, ImageOps
@@ -355,7 +357,7 @@ def write_image(img, path: str):
         img.save(path)
 
 
-def read_image(path: str | Path, rnumpy=False):
+def read_image(path: str | Path, rnumpy=False) -> np.ndarray | PIL.Image.Image:
     """
     Read an image from disk and apply EXIF orientation correction.
 

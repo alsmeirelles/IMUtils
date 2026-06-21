@@ -8,21 +8,21 @@ from .Types import BBoxYolo, Colors, LetterboxParams
 
 def yolo_to_pixels(box: BBoxYolo, H: int, W: int) -> Tuple[int, int, int, int]:
     cls, cx, cy, w, h = box
-    px = cx * W;
-    py = cy * H;
-    pw = w * W;
+    px = cx * W
+    py = cy * H
+    pw = w * W
     ph = h * H
-    x0 = px - pw / 2;
+    x0 = px - pw / 2
     y0 = py - ph / 2
-    x1 = px + pw / 2;
+    x1 = px + pw / 2
     y1 = py + ph / 2
     return int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1))
 
 
 def pixels_to_yolo(cls: int, x0: float, y0: float, x1: float, y1: float, H: int, W: int) -> BBoxYolo:
-    x0 = max(0, min(W - 1, x0));
+    x0 = max(0, min(W - 1, x0))
     x1 = max(0, min(W - 1, x1))
-    y0 = max(0, min(H - 1, y0));
+    y0 = max(0, min(H - 1, y0))
     y1 = max(0, min(H - 1, y1))
     if x1 <= x0 or y1 <= y0:
         return (cls, 0.0, 0.0, 0.0, 0.0)
@@ -40,6 +40,7 @@ def transform_labels_after_perspective_warp(
         out_size: Tuple[int, int],  # (H, W) AFTER warp
         max_elongate: float = 0.0,  # Max relation between width and height
         min_dimension: float = 0.0,
+        verbose: bool = False
 ) -> List[BBoxYolo]:
     Hi, Wi = in_size
     Ho, Wo = out_size
@@ -66,12 +67,18 @@ def transform_labels_after_perspective_warp(
         bh = wy1 - wy0
 
         if bw <= 0 or bh <= 0:
+            if verbose:
+                print(f"[tansform_labels_perspective_warp] Dropping label (BW or BH <= 0): "
+                      f"{box}")
             continue
 
         aspect = max(bw, bh) / min(bw, bh)
         dimension_ok = bw > min_dimension and bh > min_dimension
         if aspect <= max_elongate or dimension_ok:
             out.append(pixels_to_yolo(cls, wx0, wy0, wx1, wy1, Ho, Wo))
+        elif verbose:
+            print(f"[transform_labels_perspective_warp] Dropping label (aspect > max_elongate / ~dimension_ok): "
+                  f"{box} / aspect: {aspect}")
     return out
 
 
@@ -79,7 +86,8 @@ def transform_labels_after_resize_with_pad(
         labels: list[tuple[int, float, float, float, float]],
         H0: int,
         W0: int,
-        params  # LetterboxParams(ratio: float, new_size: (new_w, new_h), pad: (left, top, right, bottom))
+        params,  # LetterboxParams(ratio: float, new_size: (new_w, new_h), pad: (left, top, right, bottom))
+        verbose: bool = False
 ) -> list[BBoxYolo]:
     """
     Adjust YOLO-normalized boxes after resize_with_pad.
@@ -96,7 +104,8 @@ def transform_labels_after_resize_with_pad(
     Ht_final = int(new_h + top + bottom)
 
     out: list[tuple[int, float, float, float, float]] = []
-    for cls, cx, cy, w, h in labels:
+    for bbox in labels:
+        cls, cx, cy, w, h = bbox
         # denormalize in ORIGINAL image coords
         cx_px = cx * W0
         cy_px = cy * H0
@@ -118,6 +127,9 @@ def transform_labels_after_resize_with_pad(
         # keep only positive boxes
         if w2 > 0.0 and h2 > 0.0:
             out.append((int(cls), float(cx2), float(cy2), float(w2), float(h2)))
+        elif verbose:
+            print(f"[transform_label_after_resize] Dropping box (w or h <= 0): "
+                  f"{bbox}")
 
     return out
 

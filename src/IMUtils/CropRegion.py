@@ -263,9 +263,15 @@ def crop_white_board(
         peri = cv2.arcLength(hull, True)
         approx = cv2.approxPolyDP(hull, 0.03 * peri, True)
 
+        pts = None
         if len(approx) == 4:
-            pts = approx.reshape(4, 2).astype(np.float32)
-        else:
+            tmp_pts = approx.reshape(4, 2).astype(np.float32)
+            # Validate that the 4 points form a sensible, convex shape without extreme shear
+            if _quad_is_convex(tmp_pts) and _min_angle_deg(tmp_pts) > 60:
+                pts = tmp_pts
+
+        if pts is None:
+            # Fallback to a mathematically guaranteed rectangle to prevent shearing
             rect_points = cv2.boxPoints(cv2.minAreaRect(hull))
             pts = rect_points.astype(np.float32)
 

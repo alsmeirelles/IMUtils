@@ -263,13 +263,19 @@ def crop_white_board(
         peri = cv2.arcLength(hull, True)
         approx = cv2.approxPolyDP(hull, 0.03 * peri, True)
 
+        pts = None
         if len(approx) == 4:
-            pts = approx.reshape(4, 2).astype(np.float32)
-        else:
+            tmp_pts = approx.reshape(4, 2).astype(np.float32)
+            # Validate that the 4 points form a sensible, convex shape without extreme shear
+            if _quad_is_convex(tmp_pts) and _min_angle_deg(tmp_pts) > 60:
+                pts = tmp_pts
+
+        if pts is None:
+            # Fallback to a mathematically guaranteed rectangle to prevent shearing
             rect_points = cv2.boxPoints(cv2.minAreaRect(hull))
             pts = rect_points.astype(np.float32)
 
-        ordered_pts = _order_points_strictly(pts)
+        ordered_pts = _order_quad(pts)
         (tl, tr, br, bl) = ordered_pts
 
         w_top = np.linalg.norm(tr - tl)
@@ -309,18 +315,24 @@ def crop_white_board(
 
         measured_w = max(w_top, w_bot)
         measured_h = max(h_left, h_right)
-        is_landscape = measured_w >= measured_h
 
-        # Calculate high-res output target bounds dimensions directly
-        if is_landscape:
-            out_w = int(measured_w)
-            out_h = int(round(out_w / base_ratio))
-        else:
-            out_h = int(measured_h)
-            out_w = int(round(out_h / base_ratio))
+        # Calculate approximate area to preserve original pixel density
+        approx_area = measured_w * measured_h
+        measured_ar = measured_w / max(measured_h, 1.0)
 
-        out_w = max(100, min(out_w, W))
-        out_h = max(100, min(out_h, H))
+        # Orientation-agnostic target assignment
+        ar_cand = base_ratio
+        if abs(np.log(measured_ar / ar_cand)) > abs(
+            np.log(measured_ar / (1.0 / ar_cand))
+        ):
+            ar_cand = 1.0 / ar_cand
+
+        # Determine exact output size based on chosen optimal orientation
+        out_w = np.sqrt(approx_area * ar_cand)
+        out_h = max(1.0, out_w / ar_cand)
+
+        out_w = int(max(100, min(out_w, W)))
+        out_h = int(max(100, min(out_h, H)))
 
         dst_pts = np.array(
             [[0, 0], [out_w - 1, 0], [out_w - 1, out_h - 1], [0, out_h - 1]],

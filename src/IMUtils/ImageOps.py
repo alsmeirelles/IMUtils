@@ -357,7 +357,7 @@ def write_image(img, path: str):
         img.save(path)
 
 
-def read_image(path: str | Path, rnumpy=False) -> np.ndarray | PIL.Image.Image:
+def read_image(path: str | Path, rnumpy=False, rexif=False) -> np.ndarray | PIL.Image.Image | tuple[np.ndarray | PIL.Image.Image, int]:
     """
     Read an image from disk and apply EXIF orientation correction.
 
@@ -371,22 +371,34 @@ def read_image(path: str | Path, rnumpy=False) -> np.ndarray | PIL.Image.Image:
         path: Path to the image file.
         rnumpy: When true, return a BGR NumPy array. When false, return a PIL
             image.
+        rexif: When true, return the EXIF orientation tag. When false, return
+            the image without the EXIF orientation tag.
 
     Returns:
         Image.Image | np.ndarray: EXIF-corrected PIL image, or BGR NumPy array
         if ``rnumpy`` is true.
     """
     path = Path(path)
-
     im = Image.open(path)
-    im = ImageOps.exif_transpose(im)
-    if rnumpy:
-        if HAS_HEIF and path.suffix.lower() in ['.heic', '.heif']:
-            im = im.convert("RGB")
-        return np.array(im)[:, :, ::-1]  # BGR numpy array
-    else:
-        return im
 
+    # Extract EXIF orientation BEFORE transposing (Tag 274 / 0x0112 is Orientation)
+    exif = im.getexif()
+    orientation_tag = exif.get(0x0112, 1)  # Default to 1 if no EXIF is found
+
+    # Apply the visual transposition
+    im = ImageOps.exif_transpose(im)
+
+    if rnumpy:
+        if HAS_HEIF and path.suffix.lower() in [".heic", ".heif"]:
+            im = im.convert("RGB")
+        rgb = np.array(im)[:, :, ::-1] # BGR numpy array
+        if rexif:
+            return rgb, orientation_tag
+        return rgb
+    else:
+        if rexif:
+            return im, orientation_tag
+        return im
 
 if __name__ == "__main__":
 

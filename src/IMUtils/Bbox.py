@@ -80,12 +80,13 @@ def pixels_to_yolo(
 
 def transform_labels_after_perspective_warp(
     labels: list[BBoxYolo],
-    Hmat: np.ndarray,
+    hmat: np.ndarray,
     in_size: tuple[int, int],
     out_size: tuple[int, int],
     max_elongate: float = 0.0,
     min_dimension: float = 0.0,
     verbose: bool = False,
+    image: Path = None,
 ) -> list[BBoxYolo]:
     """Transform YOLO labels after applying a perspective warp.
 
@@ -96,7 +97,7 @@ def transform_labels_after_perspective_warp(
 
     Args:
         labels: YOLO-format labels from the input image.
-        Hmat: ``3 x 3`` homography matrix used for the image warp.
+        hmat: ``3 x 3`` homography matrix used for the image warp.
         in_size: Input image size as ``(height, width)``.
         out_size: Output image size as ``(height, width)``.
         max_elongate: Maximum allowed aspect ratio. A value of ``0.0`` disables
@@ -104,7 +105,7 @@ def transform_labels_after_perspective_warp(
         min_dimension: Minimum width and height, in pixels, accepted regardless
             of the aspect-ratio filter.
         verbose: If true, print messages when labels are dropped.
-
+        image: path to the image of which labels are being processed (for debugging purposes)
     Returns:
         Transformed labels in YOLO format, normalized to ``out_size``.
     """
@@ -135,7 +136,7 @@ def transform_labels_after_perspective_warp(
 
         # Warp points.
         pts_h = np.concatenate([pts, np.ones((5, 1), dtype=np.float32)], axis=1)
-        warped = (Hmat @ pts_h.T).T
+        warped = (hmat @ pts_h.T).T
         warped = warped[:, :2] / warped[:, 2:3]
 
         # Extract new center.
@@ -163,6 +164,8 @@ def transform_labels_after_perspective_warp(
 
         if bw <= 0 or bh <= 0:
             if verbose:
+                if image is not None:
+                    print(f"Image: {image.name}")
                 print(
                     f"[transform_labels_perspective_warp] Dropping label (BW or BH <= 0): {box}"
                 )
@@ -174,6 +177,9 @@ def transform_labels_after_perspective_warp(
         if (aspect <= max_elongate or max_elongate == 0) or dimension_ok:
             out.append(pixels_to_yolo(cls, wx0, wy0, wx1, wy1, Ho, Wo))
         elif verbose:
+            if image is not None:
+                print(f"Image: {image.name}")
+
             print(
                 "[transform_labels_perspective_warp] Dropping label "
                 f"(aspect {aspect:.2f} > {max_elongate})"

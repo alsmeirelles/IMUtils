@@ -17,7 +17,7 @@ sync:
 	$(UV) sync --all-extras --dev
 
 test:
-	$(UV) run pytest $(PYTEST_ARGS)
+	$(UV) run pytest -rs $(PYTEST_ARGS)
 
 build: clean-build
 	mkdir -p $(DIST_DIR)

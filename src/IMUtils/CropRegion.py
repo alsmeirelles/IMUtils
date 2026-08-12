@@ -200,6 +200,36 @@ def _order_points_strictly(pts: np.ndarray) -> np.ndarray:
 
     return np.array([tl, tr, br, bl], dtype=np.float32)
 
+def _contour_geometry_score(contour, base_ratio):
+    hull = cv2.convexHull(contour)
+
+    rect = cv2.minAreaRect(hull)
+    pts = cv2.boxPoints(rect).astype(np.float32)
+    pts = _order_quad(pts)
+
+    tl, tr, br, bl = pts
+
+    w_top = np.linalg.norm(tr - tl)
+    w_bot = np.linalg.norm(br - bl)
+    h_left = np.linalg.norm(bl - tl)
+    h_right = np.linalg.norm(br - tr)
+
+    cand_w = max(w_top, w_bot)
+    cand_h = max(h_left, h_right)
+
+    if cand_w <= 0 or cand_h <= 0:
+        return 0.0
+
+    observed_ratio = cand_w / cand_h
+
+    err_landscape = abs(np.log(observed_ratio / base_ratio))
+    err_portrait = abs(
+        np.log(observed_ratio / (1.0 / base_ratio))
+    )
+
+    ratio_error = min(err_landscape, err_portrait)
+
+    return float(np.exp(-ratio_error * 3.0))
 
 # ---------------------- Public functions ----------------------------------------------------
 
@@ -242,8 +272,125 @@ def crop_white_board(
 
     kernel_size = max(15, int(min(proc_w, proc_h) * 0.06)) | 1
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+
+    # Keep the existing behavior first.
     mask_closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
     mask_closed = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel)
+
+    # -------------------------------------------------------------------------
+    # Reflection fallback
+    #
+    # Bright reflections on colored/textured backgrounds can become connected
+    # to the white board in the Otsu mask. If the dominant bright component
+    # touches the frame, retry using only low-saturation bright pixels.
+    #
+    # The normal path above remains completely unchanged.
+    # -------------------------------------------------------------------------
+    initial_contours, _ = cv2.findContours(
+        mask_closed,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+
+    if initial_contours:
+        initial = max(initial_contours, key=cv2.contourArea)
+        initial_area = cv2.contourArea(initial)
+
+        bx, by, bw, bh = cv2.boundingRect(initial)
+
+        border_margin = 2
+        initial_border_contacts = sum(
+            (
+                bx <= border_margin,
+                by <= border_margin,
+                bx + bw >= proc_w - border_margin,
+                by + bh >= proc_h - border_margin,
+            )
+        )
+
+        if initial_border_contacts > 0:
+            hsv = cv2.cvtColor(proc_img, cv2.COLOR_BGR2HSV)
+            saturation = hsv[:, :, 1]
+
+            bright = thresh > 0
+
+            if np.any(bright):
+                # White board pixels normally have very low saturation.
+                # Estimate the limit from the image itself rather than using
+                # a fixed absolute threshold.
+                # sat_limit = int(
+                #     np.clip(
+                #         np.quantile(saturation[bright], 0.95) + 10,
+                #         35,
+                #         70,
+                #     )
+                # )
+                sat_limit = 35
+
+                low_chroma = saturation <= sat_limit
+
+                reflection_safe_thresh = np.where(
+                    bright & low_chroma,
+                    255,
+                    0,
+                ).astype(np.uint8)
+
+                reflection_safe = cv2.morphologyEx(
+                    reflection_safe_thresh,
+                    cv2.MORPH_OPEN,
+                    kernel,
+                )
+                reflection_safe = cv2.morphologyEx(
+                    reflection_safe,
+                    cv2.MORPH_CLOSE,
+                    kernel,
+                )
+
+                fallback_contours, _ = cv2.findContours(
+                    reflection_safe,
+                    cv2.RETR_EXTERNAL,
+                    cv2.CHAIN_APPROX_SIMPLE,
+                )
+
+                if fallback_contours:
+                    fallback = max(
+                        fallback_contours,
+                        key=cv2.contourArea,
+                    )
+                    fallback_area = cv2.contourArea(fallback)
+
+                    fx, fy, fw, fh = cv2.boundingRect(fallback)
+
+                    fallback_border_contacts = sum(
+                        (
+                            fx <= border_margin,
+                            fy <= border_margin,
+                            fx + fw >= proc_w - border_margin,
+                            fy + fh >= proc_h - border_margin,
+                        )
+                    )
+
+                    initial_geometry_score = _contour_geometry_score(initial, base_ratio)
+                    fallback_geometry_score = _contour_geometry_score(fallback, base_ratio)
+
+                    area_ratio = (
+                        fallback_area / initial_area if initial_area > 0 else 0.0
+                    )
+
+                    geometry_delta = fallback_geometry_score - initial_geometry_score
+
+                    geometry_improved = geometry_delta >= 0.05
+                    geometry_not_worse = geometry_delta >= -0.02
+
+                    border_improved = fallback_border_contacts < initial_border_contacts
+
+                    area_reasonable = fallback_area >= 0.80 * initial_area
+
+                    if area_reasonable and (
+                        geometry_improved or (border_improved and geometry_not_worse)
+                    ):
+                        mask_closed = reflection_safe
+
 
     # 3. Shape Analysis & Geometry Validation
     contours, _ = cv2.findContours(

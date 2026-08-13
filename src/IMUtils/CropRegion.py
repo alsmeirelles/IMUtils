@@ -291,7 +291,8 @@ def crop_white_board(
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE,
     )
-
+    force_rect_geometry = False
+    
     if initial_contours:
         initial = max(initial_contours, key=cv2.contourArea)
         initial_area = cv2.contourArea(initial)
@@ -384,13 +385,27 @@ def crop_white_board(
 
                     border_improved = fallback_border_contacts < initial_border_contacts
 
-                    area_reasonable = fallback_area >= 0.80 * initial_area
+                    area_reasonable = fallback_area >= 0.6 * initial_area
 
                     if area_reasonable and (
                         geometry_improved or (border_improved and geometry_not_worse)
                     ):
                         mask_closed = reflection_safe
-
+                        if area_ratio < 0.75:
+                            force_rect_geometry = True
+                    # else:
+                    #     print(
+                    #         f"REFLECTION_DEBUG -> Mask kept "
+                    #         f"name={image_name} "
+                    #         f"area_ratio={area_ratio:.4f} "
+                    #         f"border_before={initial_border_contacts} "
+                    #         f"border_after={fallback_border_contacts} "
+                    #         f"geom_before={initial_geometry_score:.4f} "
+                    #         f"geom_after={fallback_geometry_score:.4f} "
+                    #         f"area_reasonable={area_reasonable} "
+                    #         f"geometry_improved={geometry_improved} "
+                    #         f"border_improved={border_improved}"
+                    #     )
 
     # 3. Shape Analysis & Geometry Validation
     contours, _ = cv2.findContours(
@@ -411,10 +426,22 @@ def crop_white_board(
         approx = cv2.approxPolyDP(hull, 0.03 * peri, True)
 
         pts = None
-        if len(approx) == 4:
+        if len(approx) == 4 and not force_rect_geometry:
             tmp_pts = approx.reshape(4, 2).astype(np.float32)
-            # Validate that the 4 points form a sensible, convex shape without extreme shear
-            if _quad_is_convex(tmp_pts) and _min_angle_deg(tmp_pts) > 60:
+            ordered_tmp = _order_quad(tmp_pts)
+
+            top, bottom, left, right = _side_lengths(ordered_tmp)
+
+            width_asymmetry = abs(top - bottom) / max(top, bottom)
+            height_asymmetry = abs(left - right) / max(left, right)
+
+            perspective_sane = width_asymmetry < 0.35 and height_asymmetry < 0.35
+
+            if (
+                _quad_is_convex(tmp_pts)
+                and _min_angle_deg(tmp_pts) > 60
+                and perspective_sane
+            ):
                 pts = tmp_pts
 
         if pts is None:

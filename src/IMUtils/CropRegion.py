@@ -393,19 +393,6 @@ def crop_white_board(
                         mask_closed = reflection_safe
                         if area_ratio < 0.75:
                             force_rect_geometry = True
-                    # else:
-                    #     print(
-                    #         f"REFLECTION_DEBUG -> Mask kept "
-                    #         f"name={image_name} "
-                    #         f"area_ratio={area_ratio:.4f} "
-                    #         f"border_before={initial_border_contacts} "
-                    #         f"border_after={fallback_border_contacts} "
-                    #         f"geom_before={initial_geometry_score:.4f} "
-                    #         f"geom_after={fallback_geometry_score:.4f} "
-                    #         f"area_reasonable={area_reasonable} "
-                    #         f"geometry_improved={geometry_improved} "
-                    #         f"border_improved={border_improved}"
-                    #     )
 
     # 3. Shape Analysis & Geometry Validation
     contours, _ = cv2.findContours(

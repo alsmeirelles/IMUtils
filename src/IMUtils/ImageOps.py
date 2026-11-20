@@ -352,7 +352,13 @@ def write_image(img, path: str):
         None
     """
     if isinstance(img, np.ndarray):
-        Image.fromarray(img[:, :, ::-1]).save(path)  # BGR -> RGB before saving PIL
+        # Standard HWC format (Height, Width, Channels) - e.g., OpenCV / PIL
+        img = img[:, :, ::-1] if img.ndim == 3 and img.shape[2] == 3 else img
+
+        # CHW format (Channels, Height, Width) - e.g., PyTorch
+        img = img[::-1, :, :] if img.ndim == 3 and img.shape[0] == 3 else img
+
+        Image.fromarray(img).save(path)  # BGR -> RGB before saving PIL
     elif isinstance(img, Image.Image):
         img.save(path)
 
